@@ -50,7 +50,7 @@ class RecordingTests(unittest.TestCase):
             self.assertEqual(files.load_selection(root)['identity_hex'],item.identity_hex)
             target=root/'中文目录 & recordings'
             files.set_download_folder(root,target)
-            self.assertEqual(files.download_folder(root),target)
+            self.assertEqual(files.download_folder(root).resolve(),target.resolve())
 
     def test_list_requires_complete_packet_and_marks_active(self):
         payload=struct.pack('<HIIIII',1,123,456,160,123,5)

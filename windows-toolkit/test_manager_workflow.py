@@ -73,7 +73,7 @@ class PanelTests(unittest.TestCase):
                     recordings[:]=[recordings[0]]
                     panel.export_files(all_files=True)
                     self.wait(lambda:not panel.busy)
-                    self.assertEqual(downloads,[(123,target,False)])
+                    self.assertEqual(downloads,[(123,target.resolve(),False)])
                     self.assertIn('已完整下载 1',panel.status.get())
                     async def empty_scan(): return []
                     with patch.object(ui,'scan',empty_scan):
