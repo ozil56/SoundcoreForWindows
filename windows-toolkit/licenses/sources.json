@@ -1,0 +1,47 @@
+[
+  {
+    "file": "libopus.txt",
+    "source": "https://github.com/xiph/opus/blob/main/COPYING",
+    "blob_sha": "75711467a3eb220f35f72afdb55a4734ee5cdb47"
+  },
+  {
+    "file": "libogg.txt",
+    "source": "https://github.com/xiph/ogg/blob/main/COPYING",
+    "blob_sha": "6111c6c5a6b95057e43d36b7c217b073bf5f9b22"
+  },
+  {
+    "file": "libvorbis.txt",
+    "source": "https://github.com/xiph/vorbis/blob/main/COPYING",
+    "blob_sha": "fb456a87bdfafe2cab7de982e8ce11204933ec5c"
+  },
+  {
+    "file": "libFLAC.txt",
+    "source": "https://github.com/xiph/flac/blob/master/COPYING.Xiph",
+    "blob_sha": "f42f48b3fa0be2435c65491f7dbf4680aa68d1a0"
+  },
+  {
+    "file": "libopusfile.txt",
+    "source": "https://github.com/xiph/opusfile/blob/main/COPYING",
+    "blob_sha": "7b53d665dfd82eef62ce20b50ff365df9c4253cb"
+  },
+  {
+    "file": "libopusenc.txt",
+    "source": "https://github.com/xiph/libopusenc/blob/master/COPYING",
+    "blob_sha": "029b03db768d575b3b9226d7f277f27f406c401d"
+  },
+  {
+    "file": "PortAudio.txt",
+    "source": "https://github.com/PortAudio/portaudio/blob/master/LICENSE.txt",
+    "blob_sha": "e0ac4e8a0c0188cece03c15e956b800f34e1c449"
+  },
+  {
+    "file": "Tcl.txt",
+    "source": "https://github.com/tcltk/tcl/blob/main/license.terms",
+    "blob_sha": "d8049cd9e7ca055f7e584a76f88861a294b30c9c"
+  },
+  {
+    "file": "Tk.txt",
+    "source": "https://github.com/tcltk/tk/blob/main/license.terms",
+    "blob_sha": "01264352c87ca7e34771bd1ee18bed5201ef139f"
+  }
+]

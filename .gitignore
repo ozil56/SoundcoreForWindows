@@ -44,3 +44,18 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Local Windows toolkit state and generated artifacts
+/windows-toolkit/.venv/
+/windows-toolkit/__pycache__/
+/windows-toolkit/build/
+/windows-toolkit/dist/
+/windows-toolkit/release/
+/windows-toolkit/diagnostics/
+/windows-toolkit/recorder-identity.json
+/windows-toolkit/tool-settings.json
+/windows-toolkit/exports/
+/windows-toolkit/导出的录音/
+*.wav
+*.opus
+*.opus.bin

@@ -1,0 +1,9 @@
+windows-toolkit/*.py text eol=lf
+windows-toolkit/*.md text eol=lf
+windows-toolkit/*.txt text eol=lf
+windows-toolkit/*.spec text eol=lf
+windows-toolkit/VERSION text eol=lf
+windows-toolkit/licenses/* text eol=lf
+windows-toolkit/*.ico binary
+.github/workflows/*.yml text eol=lf
+/README*.md text eol=lf

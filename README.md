@@ -1,94 +1,85 @@
-# Soundcore Manager（安克录音豆）
+# SoundcoreForWindows
 
-**soundcore Work**（安克 AI 录音豆 / **D3200**）本地管理 App，基于逆向出的设备协议（见 [`PROTOCOL.md`](PROTOCOL.md)）用 Flutter 实现，脱离飞书 App 独立使用：BLE 配对连接、录音管理、AI 实时/批量转写、Wi‑Fi SoftAP 批量导出。
+Windows 上的 **soundcore Work / 安克录音豆 D3200** 托盘工具：连接 Typeless 等麦克风应用，管理和下载设备录音。
 
-## 支持平台
+基于 [tacshi/Soundcore](https://github.com/tacshi/Soundcore) 的 BLE 协议研究，保留上游 fork 关系与历史。Windows 实现在 [`windows-toolkit/`](windows-toolkit/) 中，使用 Python、Bleak 和 Tk；**不是上游 Flutter 应用的 Windows runner**。上游移动端与 macOS 项目说明见 [README.upstream.md](README.upstream.md)。
 
-| 平台 | 状态 |
-|------|------|
-| Android | BLE 扫描 / GATT |
-| iOS | BLE 扫描 / GATT |
-| macOS | BLE 扫描 / GATT（需 Bluetooth entitlement） |
+An independent Windows tray application for soundcore Work / D3200: BLE audio to a virtual microphone, plus local recording download and management. This is a community project, not an official Anker, Feishu or Typeless product.
 
-## 功能
+## 下载与开始使用
 
-- **首页**：浏览本地与设备端录音，下拉刷新、长按批量选择；点开详情阅读全文、翻译、播放、分享或重命名
-- **录音详情**：实时转写与保存后的文本使用同一详情页；返回首页不停止录音，暂停后保留当前页面。向上滚动可阅读旧内容，点「最新内容」恢复跟随
-- **设备**：电量（耳机 + 充电盒）、录音控制、配对绑定 / 解绑、恢复出厂设置
-- **设置**：选择 Apple 设备端或 Soniox、准备语言、自动转写、API Key 管理与诊断日志
-- **扫描**：首页顶部按钮触发底部弹窗（非独立 Tab）搜索并连接 BLE 设备
-- **Wi‑Fi 批量导出**：SoftAP 直连 + AES 解密，导出文件本地播放
-- **iPhone 操作按钮**：从锁屏或其他 App 打开本应用，并让已绑定的 D3200 立即开始录音
+1. 从 [Releases](https://github.com/ozil56/SoundcoreForWindows/releases) 下载 `SoundcoreForWindows-v2.1.0-windows-x64.zip`，完整解压到可写的固定文件夹，保留 `_internal`。
+2. 打开 Windows 蓝牙，取出并唤醒录音豆。手机 App 和其他电脑需要释放与它的连接。
+3. 运行 `SoundcoreMicrophone.exe` → **设备与录音** → 扫描，选中自己的录音豆并点击 **记住所选录音豆**。
+4. 以后程序只会自动连接选定的设备。无需在 Windows「添加设备」中配对，也无需安装 Python 或连接安卓手机。
 
-## 配置 iPhone 操作按钮
+要求：**Windows x64**、支持 BLE 的蓝牙适配器及正常工作的厂商驱动。已实测 Windows 11 x64；其他电脑、适配器和固件仍需验证。只支持使用同一协议的 soundcore Work / D3200，不适用于任意蓝牙录音器或 soundcore 耳机。
 
-安装并至少连接一次录音豆后，在支持操作按钮的 iPhone 上打开：
+## 作为 Typeless 麦克风
 
-1. **设置 → 操作按钮 → 快捷指令**。
-2. 选择 **安克录音豆 → Start Recording**。
-3. 长按操作按钮。App 会打开；如果录音豆暂时离线，会先自动重连再开始录音。
+声音路径：`录音豆 → BLE → 本程序 → VB-CABLE → CABLE Output → Typeless`。
 
-录音已经进行时再次运行快捷指令只会回到当前实时会话，不会重复发送开始命令。若 30 秒内找不到已绑定设备，请唤醒并靠近录音豆后重试。
+1. 从 [VB-Audio 官网](https://vb-audio.com/Cable/) 单独下载、安装 VB-CABLE；按照安装器要求重启。
+2. Typeless 的麦克风选择 **CABLE Output**，关闭 **语音输入时静音**。
+3. Windows 的扬声器输出保持原来的扬声器或耳机。**CABLE Input** 是本程序写入声音的端口，不是 Typeless 的麦克风入口。
+4. 关闭录音管理面板，按下录音豆侧键，等托盘显示正在收音，再用 Typeless 的听写快捷键输入。
 
-## 项目结构
+可在主窗口勾选 **登录 Windows 后自动启动**。启动后驻留托盘，没有 CMD 窗口；关闭主窗口仅收起，右键托盘可退出。
 
-```
-lib/
-├── ai/          # Soniox STT（实时流式 + 批量文件）
-├── audio/       # Ogg/Opus 封装、Opus→PCM 解码
-├── ble/         # 扫描广播解析、GATT 服务、离线文件拉取、实时音频流
-├── crypto/      # 设备端 ECDH / AES 会话加解密
-├── protocol/    # 帧格式、命令字、数据模型
-├── state/       # Provider 状态：设备连接、录音、转写、导出目录、App 设置
-├── theme/       # 主题与配色
-├── ui/          # 首页 / 设备 / 设置页面与组件
-└── wifi/        # SoftAP 连接与批量导出服务
-```
+设备未录音时，程序保持 BLE 连接并等待侧键，不向 Typeless 发送录音音频。断线后自动重连。用完弹起侧键，停止设备自身的录音。
 
-## 运行
+## 录音管理
 
-```bash
-# macOS（推荐用脚本）
-./scripts/debug-mac.sh              # flutter run -d macos --debug
-./scripts/debug-mac.sh --build-only # 仅构建 debug .app
-./scripts/debug-mac.sh --open       # 构建 debug .app 并打开
+右键托盘 → **录音管理**：
 
-# 其他平台
-flutter run -d ios
-flutter run -d android
-```
+- 读取、刷新设备录音列表；支持 Ctrl / Shift 多选。
+- 设置一次固定下载目录，之后无需每次选目录。
+- **下载所选**、**一键全部下载**，保存为可直接播放的 16 kHz、单声道 PCM WAV。
+- **下载后删除**默认关闭。开启后，逐条下载、验证文件身份/加密头/分片连续性/结束信号/长度，写入 WAV 并复核 SHA256 后，才删除对应设备原件。
+- **删除所选**会显示确认框；已下载的本地 WAV 不随设备原件一起删除。
+- 取消操作会清理未完成的临时文件，保留已完成的下载；已发送的删除请求可能已经生效，应刷新列表核对。
+- 同名下载不覆盖已有文件，自动加序号；每份 WAV 附有 `.wav.json` 校验记录。
 
-## 构建
+**下载历史文件前，请先停止设备录音。** 实测固件 04.73 在录音中可能返回当前实时文件头，程序会阻止此时下载历史文件。管理面板打开时暂时暂停麦克风桥接，关闭后恢复之前的状态。
 
-```bash
-# macOS release + DMG → dist/soundcore-manager-<version>-macos.dmg
-./scripts/build-dmg.sh
-./scripts/build-dmg.sh --open       # 构建后在 Finder 中显示 DMG
-./scripts/build-dmg.sh --skip-build # 打包已有的 Release .app
+只做录音管理不需要 VB-CABLE 或 Typeless。长录音经 BLE 传输需要时间；目前没有接入上游的 Wi-Fi SoftAP 批量传输，也没有断点续传或重复文件自动跳过。
 
-# iOS 真机安装（Xcode 签名）
-./scripts/install-ios.sh
+## 飞书绑定与系统配对
 
-flutter build ios
-flutter build apk   # 或 appbundle
-```
+飞书账号绑定、Windows 系统配对、当前 BLE 连接是不同的状态。本程序直接使用 GATT 和设备加密协议，不使用飞书账号令牌，也不发送绑定、解绑、恢复出厂或刷固件命令；不把「先解绑飞书」作为安装步骤。
 
-## 测试
+实测范围：解绑前验证过连接和设备信息；实时音频、文件下载与删除是在解绑后验证的。不能据此保证所有绑定状态和固件都兼容。手机 App 占用蓝牙连接仍可能妨碍电脑连接。
 
-```bash
-flutter test
-```
+## 本地数据与升级
 
-覆盖协议帧编解码、设备加解密、Opus/Ogg 处理、导出目录、STT 数据模型等核心逻辑（`test/`）。
+配置和日志默认写在程序所在目录：
 
-## 说明
+| 路径 | 用途 |
+| --- | --- |
+| `recorder-identity.json` | 用户主动选择的录音豆标识 |
+| `tool-settings.json` | 固定下载目录 |
+| `diagnostics/` | 轮换诊断日志与程序状态，不记录加密密钥 |
+| `导出的录音/` | 默认下载目录，可在面板中更改 |
 
-- **Apple 设备端处理**（iOS 26+，取决于设备和语言）：D3200 实时音频与已保存录音可在 iPhone 上转写；支持实时单向翻译及已有转写文本的翻译。实时录音语言在设置中选择；已有录音可在转写或重新转写时选择语言，并按提示下载资源。Apple 处理失败不会自动切换到云端。面对面双向交流使用 Soniox。
-- **Soniox 转写**（可选）：实时或批量生成转写。
-  - 实时路径：BLE Opus → PCM16 → 对应服务商 WebSocket STT。
-  - 批量路径：通过 Soniox 异步 Files API 上传 Ogg 文件。
-  - Key 配置：`export SONIOX_API_KEY=…` 后重启 App，或在设置页粘贴保存。
-- **Wi‑Fi SoftAP 批量导出 + 解密**：BLE 连接后先做 ECDH 握手（`0x2E/0x01`）生成会话密钥；导出时打开设备 SoftAP → 加入 → WebSocket 拉取，每 160 字节分片用 `1A07` 头（`soundcored3200` magic）中的单文件密钥做 AES‑CTR 解密。导出文件保存在 `Documents/AnkerRecorder/exports` 下，命名为 `{fileId}.opus`（握手失败则为 `.opus.bin`）。本地**播放**使用 `just_audio` 播放已导出文件。
-- 设备协议细节（服务/特征 UUID、命令字、加密流程等）见 [`PROTOCOL.md`](PROTOCOL.md)。
-- 请保持蓝牙开启；旧版 Android 扫描需授予定位权限。
-- 录音进行中修改处理服务、模式或语言，将在下次录音生效。已有 Soniox 配置会保留；支持 Apple 处理且未配置 Soniox 的新设置优先选择 Apple。
+麦克风桥接音频仅在内存中传给虚拟声卡；主动下载的录音保存到指定目录。本程序不把录音上传到服务器。Typeless 或其他后续音频应用有各自的数据处理方式。
+
+升级时先退出旧版，把自己的两个配置文件复制到新版目录，按需保留下载目录，再重新设置自启动。不要同时运行两个副本争用同一只录音豆。需要指定其他数据目录时可使用 `--data-dir`，详见开发说明。
+
+## 构建与验证
+
+源码、开发环境、测试和打包命令见 [windows-toolkit/README.md](windows-toolkit/README.md)。GitHub Actions 在 Windows 上运行不需要硬件的测试并构建便携包。
+
+已在一只飞书版 soundcore Work（主固件 **04.73**）和 Windows 11 x64 上验证：
+
+- BLE 音频桥接、Typeless 实际听写、自动重连、托盘与登录自启动。
+- 完整导出一条 **1,032.58 秒 / 51,629 帧**录音，分片连续且设备文件头长度一致。
+- 经使用者授权，下载、校验并删除一条 **11.94 秒 / 597 帧**测试录音，复查设备列表确认未删除其他录音。
+- 18 项自动化测试，包括中断/损坏不删除、活动录音保护、重复下载不覆盖、设备选择不因空扫描丢失。
+
+这些硬件结果不等于已经验证所有 D3200 设备或固件。发布包为自行构建的未签名 Windows 可执行程序。
+
+## 上游与第三方
+
+协议参考提交：[`f01a19c`](https://github.com/tacshi/Soundcore/commit/f01a19c227aac0cee9a7c851b3f6b69cf5540a24)。保留上游源文件和原始历史，Windows 新增部分位于独立目录。
+
+上游当前未附带 `LICENSE` 文件；本 fork 没有给上游代码额外指定许可证。运行库各自的许可与来源见 [THIRD_PARTY_NOTICES.md](windows-toolkit/THIRD_PARTY_NOTICES.md)，发布包附带依赖许可文件。VB-CABLE 和 Typeless 需从各自官方渠道取得。
