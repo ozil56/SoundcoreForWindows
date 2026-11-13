@@ -10,8 +10,9 @@ class MeetingActionTests(unittest.TestCase):
     segments=[{'start':65,'end':88,'text':'请小王周五前完成两条路线方案对比，提交含工程量的对比表，先等测量资料到齐。'}]
 
     def item(self):
-        return {'task':'完成两条路线方案对比','kind':'明确安排','details':'比较两条路线方案并统计工程量',
+        return {'task':'完成两条路线方案对比','kind':'明确安排','scope':'会后行动','details':'比较两条路线方案并统计工程量',
             'deliverable':'含工程量的对比表','owner':'小王','deadline':'周五前','dependencies':'测量资料到齐',
+            'deadline_type':'明确期限',
             'evidence':[{'segment':0,'quote':self.segments[0]['text']}]}
 
     def test_evidence_must_be_verbatim_and_owner_is_not_invented(self):
@@ -37,6 +38,13 @@ class MeetingActionTests(unittest.TestCase):
         for model in ('model-a','model-b'):
             extract_actions(self.segments,{'ollama_model':model},state,chat,lambda:None,lambda:None,lambda *_:None,OllamaOutputLimit)
         self.assertEqual(chat.call_count,2)
+
+    def test_in_meeting_explanations_are_not_follow_up_tasks(self):
+        item=self.item();item['scope']='现场交流'
+        self.assertEqual(validate_actions({'items':[item]},self.segments,{0}),[])
+        segments=[{'text':'今天我们先探讨一下桥梁，你继续讲，按照你的思路讲。','start':0,'end':10}]
+        item.update(scope='会后行动',task='汇报桥梁现状',evidence=[{'segment':0,'quote':segments[0]['text']}])
+        self.assertEqual(validate_actions({'items':[item]},segments,{0}),[])
 
     def test_groups_cover_all_source_segments_and_keep_boundary_context(self):
         segments=[dict(start=i,end=i+1,text='文'*700) for i in range(20)]
