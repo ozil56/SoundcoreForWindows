@@ -28,6 +28,7 @@ from device_manager import DeviceManager
 from auto_sync import AutoPipeline
 from sync_panel import SyncPanel
 from local_library_panel import LocalLibraryPanel
+from local_transcription_panel import LocalTranscriptionPanel
 from vocabulary_panel import VocabularyPanel
 from tool_settings import diagnostics_folder
 
@@ -186,7 +187,7 @@ class InstanceControl:
         if already:
             self.api.CloseHandle(self.mutex); self.mutex=None
             return False
-        for name in ('show','pause','resume','reconnect','devices','files','sync','vocabulary','quit'):
+        for name in ('show','pause','resume','reconnect','devices','files','transcribe','sync','vocabulary','quit'):
             handle=self.api.CreateEventW(None,False,False,self.prefix+'.'+name)
             if not handle:
                 raise ctypes.WinError(ctypes.get_last_error())
@@ -319,7 +320,7 @@ class BridgeService:
         elif phase=='waiting': status,color='已连接，等待录音豆开始录音','#3b82f6'
         elif phase in ('connecting','starting'): status,color='正在连接录音豆…','#f59e0b'
         else: status,color='等待录音豆开启，自动连接中','#94a3b8'
-        return {'version':'2.3.0','pid':os.getpid(),'running':bool(self.worker and self.worker.is_alive()),
+        return {'version':'2.4.0','pid':os.getpid(),'running':bool(self.worker and self.worker.is_alive()),
                 'auto_connect':self.enabled.is_set(),'status':status,'phase':phase,'color':color,
                 'attempts':self.attempts,'last_error':self.last_error,
                 'audio_output_error':getattr(output,'error',''),
@@ -338,9 +339,9 @@ class App:
         self.control=control
         self.root=tk.Tk()
         self.root.withdraw()
-        self.root.title('录音豆工具箱 v2.3 · 词库与录音管理')
-        self.root.geometry('680x610')
-        self.root.minsize(650,580)
+        self.root.title('录音豆工具箱 v2.4 · 本地音频转写')
+        self.root.geometry('740x670')
+        self.root.minsize(700,640)
         self.events=queue.Queue()
         self.commands=queue.Queue()
         self.closing=False
@@ -353,6 +354,7 @@ class App:
         self.manager=None
         self.sync_panel=None
         self.library_panel=None
+        self.transcription_panel=None
         self.vocabulary_panel=None
         self.status=tk.StringVar(value='后台启动中…')
         self.stats=tk.StringVar(value='等待录音豆')
@@ -376,14 +378,16 @@ class App:
         self.toggle_button.pack(side='left')
         ttk.Button(buttons,text='立即重连',command=lambda:self.dispatch('reconnect')).pack(side='left',padx=10)
         ttk.Button(buttons,text='收起到托盘',command=self.root.withdraw).pack(side='left')
-        ttk.Button(buttons,text='录音管理',command=self.show_library).pack(side='right')
-        ttk.Button(buttons,text='词库管理',command=self.show_vocabulary).pack(side='right',padx=6)
         ttk.Button(buttons,text='选择录音豆',command=self.show_manager).pack(side='right')
+        tools=ttk.Frame(outer); tools.pack(fill='x',pady=(10,0))
+        ttk.Button(tools,text='转写本地音频',command=self.show_transcription).pack(side='left')
+        ttk.Button(tools,text='录音管理',command=self.show_library).pack(side='left',padx=8)
+        ttk.Button(tools,text='词库管理',command=self.show_vocabulary).pack(side='left')
+        ttk.Button(tools,text='日常录音自动处理',command=self.show_sync_panel).pack(side='right')
         settings=ttk.Frame(outer); settings.pack(fill='x',pady=(12,0))
         ttk.Checkbutton(settings,text='登录 Windows 后自动启动',variable=self.autostart_var,
                         command=self.change_autostart).pack(side='left')
         ttk.Button(settings,text='首次使用 / 检查环境',command=self.show_guide).pack(side='right')
-        ttk.Button(settings,text='自动同步与转写',command=self.show_sync_panel).pack(side='right',padx=8)
         ttk.Label(outer,text='开启录音豆后会自动连接，断线后自动重连。\n'
                   'Typeless 麦克风保持选择 CABLE Output，用右 Alt 开始、结束听写。\n'
                   '关闭此窗口后仍在托盘运行；彻底退出请右键托盘图标。\n'
@@ -400,9 +404,10 @@ class App:
                 pystray.MenuItem(lambda item:'暂停自动连接' if self.service.enabled.is_set() else '恢复自动连接',
                                  lambda icon,item:self.commands.put('toggle')),
                 pystray.MenuItem('立即重连',lambda icon,item:self.commands.put('reconnect')),
+                pystray.MenuItem('转写本地音频',lambda icon,item:self.commands.put('transcribe')),
                 pystray.MenuItem('录音管理',lambda icon,item:self.commands.put('files')),
                 pystray.MenuItem('词库管理 / 新词审核',lambda icon,item:self.commands.put('vocabulary')),
-                pystray.MenuItem('自动同步与转写',lambda icon,item:self.commands.put('sync')),
+                pystray.MenuItem('日常录音自动处理',lambda icon,item:self.commands.put('sync')),
                 pystray.MenuItem('选择录音豆',lambda icon,item:self.commands.put('devices')),
                 pystray.MenuItem('首次使用 / 检查环境',lambda icon,item:self.commands.put('guide')),
                 pystray.Menu.SEPARATOR,
@@ -440,6 +445,12 @@ class App:
         if self.library_panel and not self.library_panel.closed:
             self.library_panel.window.lift(); return
         self.library_panel=LocalLibraryPanel(self,ROOT)
+
+    def show_transcription(self):
+        if self.closing: return
+        if self.transcription_panel and not self.transcription_panel.closed:
+            self.transcription_panel.window.deiconify(); self.transcription_panel.window.lift(); return
+        self.transcription_panel=LocalTranscriptionPanel(self,ROOT)
 
     def show_vocabulary(self):
         if self.closing: return
@@ -482,6 +493,7 @@ class App:
         if command=='guide': self.show_guide(); return
         if command=='devices': self.show_manager(); return
         if command=='files': self.show_library(); return
+        if command=='transcribe': self.show_transcription(); return
         if command=='vocabulary': self.show_vocabulary(); return
         if command=='sync': self.show_sync_panel(); return
         if command=='toggle': command='pause' if self.service.enabled.is_set() else 'resume'
@@ -502,6 +514,7 @@ class App:
             if self.manager: self.manager.close()
             if self.sync_panel: self.sync_panel.close()
             if self.library_panel: self.library_panel.close()
+            if self.transcription_panel: self.transcription_panel.close()
             if self.vocabulary_panel: self.vocabulary_panel.close()
             self.pipeline.stop()
         self.service.command(command)
@@ -569,7 +582,7 @@ def main():
     parser.add_argument('--connect',action='store_true',help=argparse.SUPPRESS)
     parser.add_argument('--tray',action='store_true')
     parser.add_argument('--data-dir',type=Path)
-    parser.add_argument('--command',choices=['show','pause','resume','reconnect','devices','files','sync','vocabulary','quit'])
+    parser.add_argument('--command',choices=['show','pause','resume','reconnect','devices','files','transcribe','sync','vocabulary','quit'])
     args=parser.parse_args()
     if args.data_dir: ROOT=args.data_dir.resolve()
     elif getattr(sys,'frozen',False):

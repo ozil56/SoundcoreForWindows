@@ -19,6 +19,18 @@ py -3.13 -m venv .venv
 
 测试使用模拟设备、虚拟注册表及真实 Tk 控件，不访问录音豆、不改动系统自启动，也不会删除真实录音。涵盖跨午夜时间段、重复下载跳过、校验后删除、录音抢占、任务恢复、日期归档、远程桌面音频端口回退，以及词库审核、快照隔离、同音检索、手动优先队列和版本保留。
 
+## v2.4 转写本地音频
+
+托盘和主窗口都有独立的 **转写本地音频** 入口，适用于其他录音设备、手机或电脑上的 **WAV / MP3 / FLAC / OGG**。选择一个或多个文件，设置可选项目与本次专用词库，再点击 **开始转写**。通用词库自动加入；专用词库可留空，或导入 UTF-8 TXT（每行一个词或完整短语）。同批音频共用此次项目和词库。
+
+选择文件不会创建任务。明确开始后，在后台复制并校验音频，提交手动队列，不受每日自动时段或自动转写开关限制。模型串行处理，自动任务在分段边界让出；不会同时启动两份模型。无需蓝牙、录音豆、虚拟声卡或 Typeless，但需要下文的本地模型环境。
+
+**查看任务与结果** 打开统一的录音管理，可取消任务、查看文本或用其他词库重转。相同音频、项目和词库的未完成任务会复用；已完成任务再次提交生成新版本。原文件不移动、不删除，历史文本保持不变。外部音频按文件修改日期归档，项目由用户指定。
+
+副本默认保存到数据目录下 `导入录音/`；若数据目录名为 `数据`，则使用同级 `录音/导入录音/`。可通过 `tool-settings.json` 的 `import_dir` 覆盖。文本目录和模型环境与日常自动转写共用。设备下载目录扫描会识别外部音频凭证，只登记录音，不自动建任务；重启同样不会把外部音频放入日常队列。v2.3 遗留的未完成外部自动任务停止自动执行，可从录音管理重新提交；已完成结果保留。
+
+日常录音功能位于 **日常录音自动处理**，继续遵守原来的自动开关和每日时间段。文件格式以这里列出的四种为准，M4A/AAC 请先转换为 WAV 或 MP3。
+
 ## v2.3 词库与录音库
 
 托盘 **录音管理** 打开本地录音库，不暂停蓝牙。**设备内录音** 仍使用原先独占 BLE 的设备管理器。选中本地录音可指定项目、补充专用词库并重新转写，支持切换当前版本、查看原文本和导入外部音频。
@@ -48,6 +60,7 @@ CI：`.github/workflows/windows-toolkit.yml`，使用 Windows runner、Python 3.
 | `auto_sync.py` | 空闲同步、重复文件校验、删除重试、持久转写队列 |
 | `asr_worker.py` | 独立进程中的离线 Qwen3-ASR、语音分段和分段检查点 |
 | `sync_panel.py` / `tool_settings.py` | 每日时间段、跨天调度、目录和原子设置保存 |
+| `local_transcription_panel.py` | 独立本地音频入口、批量导入校验与手动提交 |
 
 麦克风与文件管理共享协议实现，但不会同时占用连接。文件导出必须核对请求文件 ID、密钥 magic、序号、结束通知和完整长度；只有完成后才将临时文件改名为最终 WAV。
 
@@ -56,11 +69,12 @@ CI：`.github/workflows/windows-toolkit.yml`，使用 Windows runner、Python 3.
 ```powershell
 .\SoundcoreMicrophone.exe --tray --data-dir "D:\SoundcoreData"
 .\SoundcoreMicrophone.exe --command files --data-dir "D:\SoundcoreData"
+.\SoundcoreMicrophone.exe --command transcribe --data-dir "D:\SoundcoreData"
 .\SoundcoreMicrophone.exe --command pause --data-dir "D:\SoundcoreData"
 .\SoundcoreMicrophone.exe --command resume --data-dir "D:\SoundcoreData"
 ```
 
-支持 `show`、`devices`、`files`、`sync`、`pause`、`resume`、`reconnect`、`quit`。所有命令需使用与正在运行的实例相同的 `--data-dir`。进程通过当前 Windows 会话内的命名事件通信，没有网络监听端口。
+支持 `show`、`devices`、`files`、`transcribe`、`vocabulary`、`sync`、`pause`、`resume`、`reconnect`、`quit`。所有命令需使用与正在运行的实例相同的 `--data-dir`。进程通过当前 Windows 会话内的命名事件通信，没有网络监听端口。
 
 `files_cli.py` 是可选开发诊断入口，使用前先暂停托盘桥接。`--scan` 仅扫描；不带该参数时只访问数据目录中已选定的设备。它没有删除录音的命令行选项。
 
@@ -74,7 +88,7 @@ py -3.13 install_local_asr.py --data-dir "D:\SoundcoreData"
 
 需要 Windows x64 Python 3.13；安装器下载 PyTorch CUDA 12.8、Qwen3-ASR-1.7B-hf 权重及依赖，合计需要数 GB 下载和更多解压空间。无 NVIDIA GPU 可加 `--cpu`，速度需要在目标机器验证。首次安装联网下载公开模型；转写进程设置离线模式，不上传音频。
 
-完成后右键托盘 → **自动同步与转写**，勾选所需功能并保存。运行程序、模型目录均可重设。模型权重不放进基础 ZIP。模型固定在 `bcd2b5b7f32b480ab5790554cfa8347f246a14f3`，遵循其 Apache-2.0 许可；依赖与模型的许可仍独立适用。
+完成后右键托盘 → **日常录音自动处理**，设置运行程序、模型目录并保存；日常自动功能按需启用。只转写外部音频时可直接用 **转写本地音频**，无需开启日常自动功能。模型权重不放进基础 ZIP。模型固定在 `bcd2b5b7f32b480ab5790554cfa8347f246a14f3`，遵循其 Apache-2.0 许可；依赖与模型的许可仍独立适用。
 
 每日时间段使用本机时间，默认 00:00–06:00。20:00–08:00 表示当天晚上到次日上午；结束时间不包含在运行区间，开始/结束相同时为全天。不会自动唤醒或启动关机的电脑，跨过整个窗口的任务等下次窗口。
 

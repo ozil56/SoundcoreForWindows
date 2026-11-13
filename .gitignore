@@ -65,4 +65,5 @@ app.*.map.json
 /windows-toolkit/transcription-cache/
 /windows-toolkit/转写文本/
 /windows-toolkit/词库/
+/windows-toolkit/导入录音/
 *.mp3

@@ -9,6 +9,10 @@ from vocabulary import now
 from tool_settings import write_json
 
 
+def is_external(receipt):
+    return receipt.get('identity_hex') == 'external' or bool(receipt.get('external_source'))
+
+
 class CatalogMixin:
     def migrate_catalog(self):
         self.data.setdefault('records',{})
@@ -20,6 +24,10 @@ class CatalogMixin:
                 version={'id':'original','output':job['output'],'label':'原转写结果',
                          'created_at':job.get('completed_at',''), 'vocabulary':{},'job_key':key}
                 record['versions'].append(version); record['current_version']='original'
+            # Older imports created automatic jobs. Keep their results, but require
+            # an explicit manual submission for unfinished external recordings.
+            if is_external(job['receipt']) and job['status'] in ('pending','failed'):
+                job.update(status='cancelled',error='本地音频请从“转写本地音频”或“重新转写”手动提交')
 
     def _ensure_record(self,key,receipt):
         return self.data['records'].setdefault(key,{'id':key,'receipt':copy.deepcopy(receipt),
@@ -38,15 +46,22 @@ class CatalogMixin:
             if project and project.strip() not in self.data['projects']: self.data['projects'].append(project.strip())
             self.save()
 
-    def queue_manual(self,record_id,snapshot):
+    def queue_manual(self,record_id,snapshot,kind='rerun',reuse_pending=False):
         with self.lock:
             record=self.data['records'][record_id]
+            if reuse_pending:
+                for key,job in self.data['jobs'].items():
+                    if (job.get('manual') and job.get('record_id')==record_id
+                            and job['status'] in ('pending','running','failed')
+                            and job.get('project')==record['project']
+                            and job.get('vocabulary',{}).get('sha256')==snapshot['sha256']):
+                        return key
             token=uuid.uuid4().hex
             key=record_id+':manual:'+token
             versions=record['versions']
             reference=next((v for v in reversed(versions) if Path(v['output']+'.json').exists()),None)
             self.data['jobs'][key]={'receipt':copy.deepcopy(record['receipt']), 'record_id':record_id,
-                'manual':True, 'version_id':token, 'created_at':now(), 'status':'pending','attempts':0,'retry_at':0,
+                'manual':True, 'kind':kind, 'version_id':token, 'created_at':now(), 'status':'pending','attempts':0,'retry_at':0,
                 'vocabulary':copy.deepcopy(snapshot),'project':record['project'],'title':record['title'],
                 'reference':reference['output']+'.json' if reference else None}
             record['special']=snapshot['special'].copy()
@@ -59,7 +74,7 @@ class CatalogMixin:
             token=job.get('version_id') or uuid.uuid4().hex
             if not any(v['id']==token for v in record['versions']):
                 record['versions'].append({'id':token,'job_key':key,'output':str(output),
-                    'label':'专用词库重新转写' if job.get('manual') else '自动转写',
+                    'label':('本地音频转写' if job.get('kind')=='local' else '专用词库重新转写') if job.get('manual') else '自动转写',
                     'created_at':now(),'project':job.get('project',record['project']),
                     'vocabulary':copy.deepcopy(job.get('vocabulary',{}))})
             record['current_version']=token
@@ -90,15 +105,21 @@ class CatalogMixin:
         with source.open('rb') as file: digest=hashlib.file_digest(file,'sha256').hexdigest()
         with self.lock:
             for record in self.data['records'].values():
-                if record['receipt']['sha256']==digest: return record['id']
+                if record['receipt']['sha256']==digest:
+                    from recorder_files import verify_download
+                    verify_download(record['receipt'])
+                    return record['id']
         folder=Path(folder); folder.mkdir(parents=True,exist_ok=True)
         target=folder/(source.stem+'_'+digest[:10]+source.suffix.lower())
         if not target.exists():
-            temporary=target.with_suffix(target.suffix+'.part')
-            shutil.copy2(source,temporary)
-            with temporary.open('rb') as file:
-                if hashlib.file_digest(file,'sha256').hexdigest()!=digest: raise ValueError('导入校验失败')
-            temporary.replace(target)
+            temporary=target.with_suffix(target.suffix+'.'+uuid.uuid4().hex+'.part')
+            try:
+                shutil.copy2(source,temporary)
+                with temporary.open('rb') as file:
+                    if hashlib.file_digest(file,'sha256').hexdigest()!=digest: raise ValueError('导入校验失败')
+                temporary.replace(target)
+            finally:
+                temporary.unlink(missing_ok=True)
         else:
             with target.open('rb') as file:
                 if hashlib.file_digest(file,'sha256').hexdigest()!=digest: raise ValueError('目标音频已存在但内容不同')
@@ -107,4 +128,6 @@ class CatalogMixin:
             'sha256':digest,'bytes':target.stat().st_size,'complete':True,'seconds':0,'external_source':str(source),
             'recorded_at':date.isoformat(),'date_source':'external_file_modified_time'}
         write_json(target.with_suffix(target.suffix+'.json'),receipt)
-        return self.register(receipt)
+        key=self.register(receipt)
+        self.edit_record([key],title=source.stem)
+        return key

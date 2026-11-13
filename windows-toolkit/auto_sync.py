@@ -18,7 +18,7 @@ import time
 from recorder_files import (RecorderSession, RecordingStarted, download_folder,
                             download_one, load_selection, verify_download)
 from tool_settings import read_settings, transcript_folder, write_json, in_schedule, schedule_label
-from recording_catalog import CatalogMixin
+from recording_catalog import CatalogMixin, is_external
 from vocabulary import VocabularyStore
 from tool_settings import diagnostics_folder, cache_folder
 
@@ -68,6 +68,13 @@ class Library(CatalogMixin):
         key = f"{receipt['identity_hex']}:{receipt['file_id']}:{receipt['sha256']}"
         with self.lock:
             job = self.data['jobs'].get(key)
+            if is_external(receipt):
+                # Folder scans must never turn an external import into a daily job.
+                record = self._ensure_record(key,receipt)
+                record['receipt'] = receipt.copy()
+                if job is not None: job['receipt'] = receipt.copy()
+                self.save()
+                return key
             if job is None:
                 job = {'receipt':receipt, 'status':'pending', 'attempts':0, 'retry_at':0}
                 self.data['jobs'][key] = job
@@ -119,6 +126,7 @@ class Library(CatalogMixin):
     def next_job(self, output_root, allow_auto=True):
         with self.lock:
             for key, job in sorted(self.data['jobs'].items(),key=lambda item:not item[1].get('manual',False)):
+                if is_external(job['receipt']) and not job.get('manual'): continue
                 if not allow_auto and not job.get('manual'): continue
                 if job['status'] in ('running','cancelled'):
                     continue
@@ -389,7 +397,7 @@ class AutoPipeline:
             elif event['event'] == 'result':
                 verify_download(receipt)
                 event.update(vocabulary=job['vocabulary'], project=job.get('project',''),
-                    title=job.get('title',''), version_id=job.get('version_id'), manual=bool(job.get('manual')),
+                    title=job.get('title',''), version_id=job.get('version_id'), manual=bool(job.get('manual')), kind=job.get('kind'),
                     total_elapsed_seconds=time.monotonic()-began,
                     finished_at=dt.datetime.now().astimezone().isoformat(),job_created_at=job.get('created_at'))
                 output = self.publish_text(receipt, event, output_root)
@@ -407,7 +415,8 @@ class AutoPipeline:
     def publish_text(self, receipt, result, output_root):
         target = dated_target(output_root, receipt)
         if result.get('version_id'):
-            target=target.with_stem(target.stem+'_专用词库_'+result['version_id'][:8])
+            label='本地转写' if result.get('kind')=='local' else '专用词库'
+            target=target.with_stem(target.stem+'_'+label+'_'+result['version_id'][:8])
         target.parent.mkdir(parents=True, exist_ok=True)
         date, date_source = recording_date(receipt)
         segments = result.get('segments', [])
@@ -483,9 +492,9 @@ class AutoPipeline:
                     if self.process and time.monotonic()-self.last_asr_use > 60:
                         self._close_process()  # release GPU when the queue is empty
                     if not settings.get('auto_transcribe', False):
-                        self.asr_status = '自动转写已关闭，进度已保存'
+                        self.asr_status = '手动转写队列空闲；日常录音自动转写已关闭'
                     elif not in_schedule(settings):
-                        self.asr_status = '等待运行时间：'+schedule_label(settings)
+                        self.asr_status = '手动转写队列空闲；日常录音等待：'+schedule_label(settings)
                 except Exception as error:
                     self.last_error = f'{type(error).__name__}: {error}'
                     self.asr_status = self.last_error

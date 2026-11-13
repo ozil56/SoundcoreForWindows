@@ -14,22 +14,22 @@ class SyncPanel:
         self.app, self.root = app, Path(root)
         settings = read_settings(root)
         self.window = tk.Toplevel(app.root)
-        self.window.title('自动同步与本地转写')
+        self.window.title('日常录音 · 自动同步与转写')
         self.window.geometry('820x780')
         self.window.minsize(760, 740)
         self.window.protocol('WM_DELETE_WINDOW', self.close)
         self.closed = False
         outer = ttk.Frame(self.window, padding=20)
         outer.pack(fill='both', expand=True)
-        ttk.Label(outer, text='自动同步与本地转写', font=('Microsoft YaHei UI',18,'bold')).pack(anchor='w')
-        ttk.Label(outer, text='只处理已选择的录音豆。处于充电盒上也可同步，只要设备仍连接并且未录音。',
+        ttk.Label(outer, text='日常录音 · 自动同步与转写', font=('Microsoft YaHei UI',18,'bold')).pack(anchor='w')
+        ttk.Label(outer, text='自动处理已选择的录音豆；外部音频请用“转写本地音频”。下方模型和文本目录由两种转写共用。',
                   wraplength=750).pack(anchor='w', pady=(8,12))
         self.auto_sync = tk.BooleanVar(value=settings.get('auto_sync',False))
         self.auto_delete = tk.BooleanVar(value=settings.get('auto_delete',False))
         self.auto_transcribe = tk.BooleanVar(value=settings.get('auto_transcribe',False))
         for label, variable in [('自动下载已完成的录音',self.auto_sync),
                 ('完整保存并校验后，自动删除录音豆上的对应原件',self.auto_delete),
-                ('自动将所有已下载录音转写为中文文本（本地处理）',self.auto_transcribe)]:
+                ('自动将已下载的设备录音转写为中文文本（本地处理）',self.auto_transcribe)]:
             ttk.Checkbutton(outer, text=label, variable=variable).pack(anchor='w',pady=3)
         schedule = ttk.LabelFrame(outer,text='每日运行时间 · 按本机时区',padding=10)
         schedule.pack(fill='x',pady=12)

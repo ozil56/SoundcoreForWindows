@@ -25,7 +25,7 @@ SOURCE_FILES = (
     'auto_sync.py', 'asr_worker.py', 'sync_panel.py', 'tool_settings.py',
     'install_local_asr.py', 'asr-requirements.txt', 'test_auto_sync.py',
     'vocabulary.py','vocabulary_context.py','vocabulary_panel.py','recording_catalog.py',
-    'local_library_panel.py','test_vocabulary.py',
+    'local_library_panel.py','test_vocabulary.py','local_transcription_panel.py','test_local_transcription.py',
 )
 FORBIDDEN_NAMES = {'recorder-identity.json', 'tool-settings.json', 'bridge-status.json', 'sync-state.json'}
 FORBIDDEN_SUFFIXES = {'.wav', '.opus', '.bin', '.log', '.apk', '.lnk'}

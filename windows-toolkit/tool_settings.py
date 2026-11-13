@@ -44,6 +44,12 @@ def transcript_folder(root):
     return Path(read_settings(root).get('transcript_dir') or Path(root)/'转写文本')
 
 
+def imported_audio_folder(root):
+    root = Path(root)
+    default = root.parent/'录音'/'导入录音' if root.name == '数据' else root/'导入录音'
+    return Path(read_settings(root).get('import_dir') or default)
+
+
 def diagnostics_folder(root):
     return Path(read_settings(root).get('diagnostics_dir') or Path(root)/'diagnostics')
 

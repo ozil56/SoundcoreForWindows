@@ -3,12 +3,9 @@ import datetime as dt
 import json
 import os
 from pathlib import Path
-import queue
-import threading
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox, simpledialog
+from tkinter import ttk, messagebox, simpledialog
 from auto_sync import recording_date
-from recorder_files import download_folder
 from vocabulary import parse_terms
 from vocabulary_panel import terms_dialog
 
@@ -16,14 +13,14 @@ from vocabulary_panel import terms_dialog
 class LocalLibraryPanel:
     def __init__(self,app,root):
         self.app=app; self.root=Path(root); self.library=app.pipeline.library; self.closed=False
-        self.events=queue.Queue(); self.signature=None; self.rows={}
+        self.signature=None; self.rows={}
         self.window=tk.Toplevel(app.root); self.window.title('录音管理 · 本地录音与转写版本')
         self.window.geometry('1100x790'); self.window.minsize(900,650)
         self.window.protocol('WM_DELETE_WINDOW',self.close)
         frame=ttk.Frame(self.window,padding=14); frame.pack(fill='both',expand=True)
         ttk.Label(frame,text='本地音频可随时重新转写，无需连接录音豆。旧版本会一直保留。').pack(anchor='w')
         bar=ttk.Frame(frame); bar.pack(fill='x',pady=8)
-        for label,cmd in [('用专用词库重新转写',self.rerun),('项目归属',self.assign),('重命名',self.rename),('导入音频',self.import_audio),('设备内录音',lambda:app.show_manager('files'))]:
+        for label,cmd in [('用专用词库重新转写',self.rerun),('项目归属',self.assign),('重命名',self.rename),('转写本地音频',lambda:app.show_transcription()),('设备内录音',lambda:app.show_manager('files'))]:
             ttk.Button(bar,text=label,command=cmd).pack(side='left',padx=(0,6))
         self.query=tk.StringVar(); ttk.Entry(bar,textvariable=self.query,width=18).pack(side='right')
         ttk.Label(bar,text='搜索录音 / 项目 ').pack(side='right')
@@ -71,7 +68,7 @@ class LocalLibraryPanel:
             if self.query.get().lower() not in (record['title']+' '+record['project']).lower(): continue
             related=[j for k,j in jobs.items() if j.get('record_id',k)==record['id']]
             active=next((j for j in related if j['status']=='running'),None) or next((j for j in reversed(related) if j['status'] in ('pending','failed')),None)
-            state=states[active['status']] if active else ('已完成' if record['versions'] else '已取消')
+            state=states[active['status']] if active else ('已完成' if record['versions'] else '等待手动提交')
             self.tree.insert('', 'end',iid=record['id'],values=(recording_date(record['receipt'])[0].strftime('%Y-%m-%d %H:%M'),
                 record['title'],record['project'] or '未归类',state,len(record['versions'])))
         for item in selected:
@@ -99,7 +96,15 @@ class LocalLibraryPanel:
             except OSError as e: content=f'文本暂不可用：{e}'
             vocab=version.get('vocabulary',{})
             self.info.set(f"通用词 {len(vocab.get('general',[]))} 个 · 专用词 {len(vocab.get('special',[]))} 个 · {version['output']}")
-        else: self.info.set('自动转写按既定时间运行；手动重新转写立即排队，不受时间段限制。')
+        else:
+            self.info.set('日常录音按既定时间自动转写；本地音频和手动重新转写不受时间段限制。')
+            record=self.selected()
+            if record:
+                content='尚无转写结果。可使用“用专用词库重新转写”手动提交；专用词库可留空。'
+                with self.library.lock:
+                    related=[j for k,j in self.library.data['jobs'].items() if j.get('record_id',k)==record['id']]
+                if related and related[-1].get('error'):
+                    content+='\n\n最近任务提示：'+related[-1]['error']
         self.text.configure(state='normal'); self.text.delete('1.0','end'); self.text.insert('1.0',content); self.text.configure(state='disabled')
 
     def rerun(self):
@@ -168,21 +173,10 @@ class LocalLibraryPanel:
                 if job.get('record_id',key) in ids: self.library.cancel(key)
         self.app.pipeline.wake_event.set(); self.refresh(True)
 
-    def import_audio(self):
-        path=filedialog.askopenfilename(parent=self.window,filetypes=[('音频','*.wav *.mp3 *.flac *.ogg')])
-        if not path: return
-        self.status.set('正在复制并校验音频…')
-        def work():
-            try: self.library.import_audio(path,download_folder(self.root)); self.events.put('音频已复制，自动转写已排队。')
-            except Exception as e: self.events.put('导入失败：'+str(e))
-        threading.Thread(target=work,daemon=True).start()
-
     def poll(self):
         if self.closed: return
         self.refresh()
-        try: message=self.events.get_nowait()
-        except queue.Empty: message=None
-        self.status.set(message or self.app.pipeline.asr_status)
+        self.status.set(self.app.pipeline.asr_status)
         self.window.after(1500,self.poll)
 
     def close(self):
