@@ -21,7 +21,7 @@ class TermEditor(ttk.Frame):
         box=ttk.Combobox(row,textvariable=self.filter,values=['全部',*STATES.values()],state='readonly',width=10);box.pack(side='left')
         box.bind('<<ComboboxSelected>>',lambda _:self.refresh());self.search.trace_add('write',lambda *_:self.refresh())
         table=ttk.Frame(self);table.pack(fill='both',expand=True,pady=12)
-        self.tree=ttk.Treeview(table,columns=('term','state','source'),show='headings',selectmode='extended',height=14)
+        self.tree=ttk.Treeview(table,columns=('term','state','source'),show='headings',selectmode='extended',height=10)
         for key,label,width in [('term','词条',280),('state','状态',90),('source','来源',360)]:
             self.tree.heading(key,text=label);self.tree.column(key,width=width)
         scroll=ttk.Scrollbar(table,orient='vertical',command=self.tree.yview)
