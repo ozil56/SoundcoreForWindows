@@ -19,10 +19,13 @@ class TermEditor(ttk.Frame):
         ttk.Entry(row,textvariable=self.search,width=34).pack(side='left',padx=8)
         box=ttk.Combobox(row,textvariable=self.filter,values=['全部',*STATES.values()],state='readonly',width=10);box.pack(side='left')
         box.bind('<<ComboboxSelected>>',lambda _:self.refresh());self.search.trace_add('write',lambda *_:self.refresh())
-        self.tree=ttk.Treeview(self,columns=('term','state','source'),show='headings',selectmode='extended',height=14)
+        table=ttk.Frame(self);table.pack(fill='both',expand=True,pady=12)
+        self.tree=ttk.Treeview(table,columns=('term','state','source'),show='headings',selectmode='extended',height=14)
         for key,label,width in [('term','词条',280),('state','状态',90),('source','来源',360)]:
             self.tree.heading(key,text=label);self.tree.column(key,width=width)
-        self.tree.pack(fill='both',expand=True,pady=12);self.tree.bind('<Double-1>',lambda _:self.edit())
+        scroll=ttk.Scrollbar(table,orient='vertical',command=self.tree.yview)
+        self.tree.configure(yscrollcommand=scroll.set);scroll.pack(side='right',fill='y')
+        self.tree.pack(fill='both',expand=True);self.tree.bind('<Double-1>',lambda _:self.edit())
         row=ttk.Frame(self);row.pack(fill='x')
         for title,command in [('添加',self.add),('修改',self.edit),('删除',lambda:self.state('deleted')),
                 ('停用',lambda:self.state('disabled')),('恢复 / 审核通过',lambda:self.state('accepted')),
@@ -43,8 +46,15 @@ class TermEditor(ttk.Frame):
         self.status.set(f'已启用 {len(self.store.rows("accepted"))} 个 · 待审核 {len(self.store.rows("pending"))} 个。UTF-8 TXT，每行一个词或短语。')
 
     def add(self):
-        def save(terms):self.store.add(terms,'手动添加');self.refresh()
-        terms_dialog(self.winfo_toplevel(),'添加词条',submit=save)
+        self.import_dialog('添加词条',[],'手动添加')
+
+    def import_dialog(self,title,terms,source):
+        pending=tk.BooleanVar(value=False)
+        def extra(frame):
+            ttk.Checkbutton(frame,text='先存入待审核（审核通过后才参与转写）',variable=pending).pack(anchor='w',pady=8)
+        def save(items):
+            self.store.add(items,source,state='pending' if pending.get() else 'accepted');self.refresh()
+        terms_dialog(self.winfo_toplevel(),title,initial=terms,submit=save,extra=extra,confirm_label='确认保存')
 
     def edit(self):
         keys=self.tree.selection()
@@ -66,8 +76,7 @@ class TermEditor(ttk.Frame):
         if not path:return
         try:
             terms=parse_terms(Path(path).read_text(encoding='utf-8-sig'))
-            def save(items):self.store.add(items,Path(path).name);self.refresh()
-            terms_dialog(self.winfo_toplevel(),'预览导入词库',initial=terms,submit=save)
+            self.import_dialog('预览导入词库',terms,Path(path).name)
         except Exception as e:messagebox.showerror('无法导入',str(e),parent=self.winfo_toplevel())
 
     def export(self):

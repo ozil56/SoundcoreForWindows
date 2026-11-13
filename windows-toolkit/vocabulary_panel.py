@@ -5,7 +5,7 @@ from pathlib import Path
 from vocabulary import parse_terms
 
 
-def terms_dialog(parent, title, initial=(), submit=None, extra=None):
+def terms_dialog(parent, title, initial=(), submit=None, extra=None, confirm_label=None):
     window=tk.Toplevel(parent); window.title(title); window.geometry('700x610'); window.minsize(570,490)
     frame=ttk.Frame(window,padding=16); frame.pack(fill='both',expand=True)
     ttk.Label(frame,text='UTF-8 TXT：每行一个词或完整短语；词内空格保留。\n空行和重复词会自动去除，请不要加入编号、标题或说明。').pack(anchor='w')
@@ -40,7 +40,7 @@ def terms_dialog(parent, title, initial=(), submit=None, extra=None):
     buttons=ttk.Frame(frame); buttons.pack(fill='x',pady=(10,0))
     ttk.Button(buttons,text='导入 TXT（追加并预览）',command=load).pack(side='left')
     ttk.Button(buttons,text='取消',command=window.destroy).pack(side='right')
-    ttk.Button(buttons,text='确认并开始' if extra else '确认导入',command=apply).pack(side='right',padx=8)
+    ttk.Button(buttons,text=confirm_label or ('确认并开始' if extra else '确认导入'),command=apply).pack(side='right',padx=8)
     return window
 
 

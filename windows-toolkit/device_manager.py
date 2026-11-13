@@ -56,7 +56,7 @@ class DeviceManager:
         self.scan_button = ttk.Button(actions, text='扫描附近的录音豆', command=self.scan_devices); self.scan_button.pack(side='left')
         self.select_button = ttk.Button(actions, text='记住所选录音豆', command=self.select_device); self.select_button.pack(side='left', padx=10)
         ttk.Label(files, text='可按 Ctrl / Shift 多选；下载为 WAV，可直接用 Windows 播放。下载历史录音前，请先停止设备录音。\n'
-                  '管理期间麦克风桥接暂停；未勾选“下载后删除”时保留设备原件。长录音传输可能需要较长时间。',
+                  '管理期间麦克风桥接暂停；“下载并删除”会在完整保存和校验后删除设备原件。',
                   wraplength=720).pack(anchor='w', pady=(0, 10))
         self.files = ttk.Treeview(files, columns=('time','id','size','state'), show='headings', height=9, selectmode='extended')
         for column, title, width in [('time','开始时间（设备时钟）',190),('id','文件编号',135),('size','设备文件大小',125),('state','状态',145)]:
@@ -69,8 +69,12 @@ class DeviceManager:
         self.export_button = ttk.Button(actions, text='下载所选', command=self.export_files); self.export_button.pack(side='left', padx=8)
         self.all_button = ttk.Button(actions, text='一键全部下载', command=lambda:self.export_files(all_files=True)); self.all_button.pack(side='left')
         self.delete_button = ttk.Button(actions, text='删除所选…', command=self.delete_files); self.delete_button.pack(side='left', padx=8)
+        self.download_delete_buttons=[]
         if tab=='files_only':
-            ttk.Button(actions,text='下载并删除所选',command=self.download_delete).pack(side='left')
+            for label,command in [('下载并删除所选',self.download_delete),
+                    ('全部下载并删除',lambda:self.download_delete(all_files=True))]:
+                button=ttk.Button(actions,text=label,command=command)
+                button.pack(side='left',padx=(0,8));self.download_delete_buttons.append(button)
         options = ttk.Frame(files); options.pack(fill='x', pady=(10, 0))
         self.delete_check = ttk.Checkbutton(options, text='下载后删除（完整下载并校验成功后逐条删除设备原件）', variable=self.delete_after)
         self.delete_check.pack(anchor='w')
@@ -99,11 +103,11 @@ class DeviceManager:
             if tab!='files_only':self.window.after(250, self.scan_devices)
             else:self.status.set('请先从托盘“连接录音豆”选择设备。')
 
-    def download_delete(self):
+    def download_delete(self,all_files=False):
         if self.busy:return
         previous=self.delete_after.get()
         self.delete_after.set(True)
-        try:self.export_files()
+        try:self.export_files(all_files=all_files)
         finally:self.delete_after.set(previous)
 
     def refresh_selected(self):
@@ -176,7 +180,8 @@ class DeviceManager:
 
     def operation_controls(self):
         return (self.scan_button, self.select_button, self.list_button, self.export_button,
-                self.all_button, self.delete_button, self.folder_button, self.delete_check)
+                self.all_button, self.delete_button, self.folder_button, self.delete_check,
+                *self.download_delete_buttons)
 
     def change_folder(self):
         folder = filedialog.askdirectory(parent=self.window, title='设定固定下载目录',
