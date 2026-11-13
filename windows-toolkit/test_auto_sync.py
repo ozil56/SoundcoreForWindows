@@ -1,6 +1,7 @@
 import asyncio
 import datetime as dt
 import hashlib
+import io
 import json
 from pathlib import Path
 import struct
@@ -83,6 +84,61 @@ class ScheduleTests(unittest.TestCase):
 
 
 class QueueTests(unittest.TestCase):
+    def test_immediate_jobs_are_device_scoped_durable_and_do_not_rerun_finished_text(self):
+        with tempfile.TemporaryDirectory() as folder:
+            pipeline=AutoPipeline(folder,lambda _:None)
+            library=pipeline.library
+            keys=[]
+            for i in range(5):
+                receipt=make_receipt(folder,1700000000+i)
+                if i==4: receipt['identity_hex']='010203040507'
+                keys.append(library.register(receipt))
+            library.update(keys[1],status='complete',output='original.txt',output_root=folder)
+            library.update(keys[2],status='cancelled')
+            library.update(keys[3],status='failed',retry_at=time.time()+300)
+            snapshot=pipeline.vocabulary.snapshot()
+            manual=library.queue_manual(keys[0],snapshot)
+            library.request_device_transcription('010203040506')
+            restored=Library(folder)
+            for i in (0,3):
+                self.assertTrue(restored.data['jobs'][keys[i]]['run_immediately'])
+                self.assertEqual(restored.data['jobs'][keys[i]]['retry_at'],0)
+            for key in (keys[1],keys[2],keys[4],manual):
+                self.assertNotIn('run_immediately',restored.data['jobs'][key])
+            self.assertEqual(restored.next_job(folder,allow_auto=False)[0],manual)
+            restored.update(manual,status='complete')
+            self.assertEqual(restored.next_job(folder,allow_auto=False)[0],keys[0])
+            restored.update(keys[0],status='complete')
+            restored.update(keys[3],status='complete')
+            self.assertIsNone(restored.next_job(folder,allow_auto=False))
+            self.assertEqual(restored.data['jobs'][keys[1]]['output'],'original.txt')
+
+    def test_immediate_transcription_finishes_with_automation_off(self):
+        with tempfile.TemporaryDirectory() as folder:
+            pipeline=AutoPipeline(folder,lambda _:None)
+            key=pipeline.library.register(make_receipt(folder))
+            pipeline.library.request_device_transcription('010203040506')
+            task=pipeline.library.next_job(Path(folder)/'texts',allow_auto=False)
+            pipeline.process=SimpleNamespace(stdin=io.StringIO())
+            pipeline.output_lines.put({'event':'result','segments':[{'start':0,'end':2,'text':'立即转写测试'}]})
+            with patch.object(pipeline,'_start_process'), patch('auto_sync.in_schedule',return_value=False):
+                pipeline.transcribe(*task,Path(folder)/'texts')
+            job=pipeline.library.data['jobs'][key]
+            self.assertEqual(job['status'],'complete')
+            self.assertIn('立即转写测试',Path(job['output']).read_text(encoding='utf-8-sig'))
+            self.assertIn('vocabulary',job)
+            self.assertIsNone(pipeline.library.next_job(Path(folder)/'texts',allow_auto=False))
+
+    def test_missing_selection_or_model_does_not_create_immediate_request(self):
+        with tempfile.TemporaryDirectory() as folder:
+            pipeline=AutoPipeline(folder,lambda _:None)
+            with self.assertRaisesRegex(ValueError,'选择录音豆'):
+                pipeline.request_device_sync()
+            save_selection(folder,Candidate('010203040506','test',-40,False))
+            with self.assertRaisesRegex(RuntimeError,'本地模型'):
+                pipeline.request_device_sync()
+            self.assertIsNone(pipeline.immediate_identity)
+
     def test_verified_receipts_skip_repeated_downloads_but_detect_damage(self):
         with tempfile.TemporaryDirectory() as folder:
             receipt = make_receipt(folder)
@@ -124,6 +180,78 @@ class QueueTests(unittest.TestCase):
 
 
 class SyncTests(unittest.IsolatedAsyncioTestCase):
+    async def test_immediate_batch_bypasses_schedule_and_switches_then_returns_to_schedule(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            update_settings(root,auto_sync=False,auto_transcribe=False,auto_delete=True)
+            save_selection(root,Candidate('010203040506','test',-40,False))
+            original_settings = read_settings(root)
+            pipeline = AutoPipeline(root,lambda _:None)
+            receiver = SimpleNamespace(recording_active=False,file_id=None,phase='waiting')
+            files = [Recording(1700000000+i,0,2000) for i in range(2)]
+            session = SimpleNamespace(list_files=AsyncMock(side_effect=lambda:files.copy()),check_idle=lambda:None)
+            async def export(item, output, progress):
+                session.transfer_guard()  # Guard must allow this explicit batch too.
+                return make_receipt(output,item.file_id)
+            session.export = AsyncMock(side_effect=export)
+            async def delete(file_id):
+                files[:] = [f for f in files if f.file_id != file_id]
+            session.delete = AsyncMock(side_effect=delete)
+            with patch.object(pipeline,'runtime'), patch('auto_sync.in_schedule',return_value=False), \
+                    patch('auto_sync.RecorderSession.attached',return_value=session):
+                self.assertTrue(pipeline.request_device_sync())
+                self.assertFalse(pipeline.request_device_sync())
+                pipeline.receiver_id=id(receiver)
+                pipeline.idle_since=time.monotonic()-20
+                for _ in range(3):
+                    await pipeline.when_idle(receiver)
+                self.assertFalse(pipeline.snapshot()['immediate_download_pending'])
+                self.assertEqual(session.export.await_count,2)
+                self.assertEqual(session.delete.await_count,2)
+                self.assertTrue(all(j['run_immediately'] for j in pipeline.library.data['jobs'].values()))
+                self.assertIsNotNone(pipeline.library.next_job(root/'text',allow_auto=False))
+                # Another file after this batch must wait for the original schedule.
+                files.append(Recording(1700000009,0,2000))
+                pipeline.next_sync=0
+                await pipeline.when_idle(receiver)
+                self.assertEqual(session.export.await_count,2)
+            self.assertEqual(read_settings(root),original_settings)
+
+    async def test_immediate_request_survives_recording_and_connection_failure(self):
+        with tempfile.TemporaryDirectory() as folder:
+            save_selection(folder,Candidate('010203040506','test',-40,False))
+            pipeline=AutoPipeline(folder,lambda _:None)
+            receiver=SimpleNamespace(recording_active=True,file_id=123,phase='streaming')
+            session=SimpleNamespace(list_files=AsyncMock(side_effect=ConnectionError('disconnected')))
+            with patch.object(pipeline,'runtime'), patch('auto_sync.RecorderSession.attached',return_value=session):
+                pipeline.request_device_sync()
+                await pipeline.when_idle(receiver)
+                session.list_files.assert_not_awaited()
+                self.assertTrue(pipeline.immediate_identity)
+                receiver.recording_active=False; receiver.file_id=None
+                pipeline.idle_since=time.monotonic()-20
+                await pipeline.when_idle(receiver)
+                self.assertTrue(pipeline.immediate_identity)
+                self.assertIn('ConnectionError',pipeline.last_error)
+                session.list_files.side_effect=None
+                session.list_files.return_value=[]
+                pipeline.next_sync=0
+                await pipeline.when_idle(receiver)
+                self.assertIsNone(pipeline.immediate_identity)
+
+    async def test_switching_device_does_not_transfer_immediate_request(self):
+        with tempfile.TemporaryDirectory() as folder:
+            save_selection(folder,Candidate('010203040506','first',-40,False))
+            pipeline=AutoPipeline(folder,lambda _:None)
+            with patch.object(pipeline,'runtime'):
+                pipeline.request_device_sync()
+            save_selection(folder,Candidate('010203040507','second',-40,False))
+            receiver=SimpleNamespace(recording_active=False,file_id=None,phase='waiting')
+            with patch('auto_sync.RecorderSession.attached') as attach:
+                await pipeline.when_idle(receiver)
+                attach.assert_not_called()
+            self.assertIsNone(pipeline.immediate_identity)
+
     async def test_delete_rechecks_local_file_and_active_state(self):
         with tempfile.TemporaryDirectory() as folder:
             update_settings(folder,auto_delete=True)

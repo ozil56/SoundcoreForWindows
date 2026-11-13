@@ -19,6 +19,12 @@ py -3.13 -m venv .venv
 
 测试使用模拟设备、虚拟注册表及真实 Tk 控件，不访问录音豆、不改动系统自启动，也不会删除真实录音。涵盖跨午夜时间段、重复下载跳过、校验后删除、录音抢占、任务恢复、日期归档、远程会话暂停音频与本机恢复，以及词库审核、快照隔离、同音检索、手动优先队列和版本保留。
 
+## v2.4.3 立即处理设备录音
+
+托盘右键 **立即下载并转写设备录音** 发起一次性设备同步，并打开进度面板。本次不受自动开关和每日时段限制，仍等待设备连接、停止录音 15 秒，并在录音抢占后重试。沿用保存目录、通用词库、完整性校验和自动删除设置，不改动日常调度。
+
+只处理选定设备的未保存录音及其尚未完成的日常转写，跳过已完成、已取消、其他设备和外部音频任务。立即转写标记随任务持久保存；未完成的设备下载请求仅在本次运行有效，退出后可再次点击。重复点击复用现有任务，转写和专用词库重转共用串行模型进程，历史文本继续保留。
+
 ## v2.4.2 转写运行环境修复
 
 修复发布版启动外部 ASR Python 时混用程序内置运行库，导致 `AttributeError: class must define a '_type_' attribute` 的问题。转写脚本及其辅助模块单独打包；子进程使用隔离模式、清理继承环境，并在启动时暂时恢复 Windows 默认 DLL 搜索路径，随后还原桥接进程的设置。自动转写、本地音频转写和指定词库重新转写共用此修复，历史结果继续保留。
@@ -80,11 +86,12 @@ CI：`.github/workflows/windows-toolkit.yml`，使用 Windows runner、Python 3.
 .\SoundcoreMicrophone.exe --tray --data-dir "D:\SoundcoreData"
 .\SoundcoreMicrophone.exe --command files --data-dir "D:\SoundcoreData"
 .\SoundcoreMicrophone.exe --command transcribe --data-dir "D:\SoundcoreData"
+.\SoundcoreMicrophone.exe --command sync-now --data-dir "D:\SoundcoreData"
 .\SoundcoreMicrophone.exe --command pause --data-dir "D:\SoundcoreData"
 .\SoundcoreMicrophone.exe --command resume --data-dir "D:\SoundcoreData"
 ```
 
-支持 `show`、`devices`、`files`、`transcribe`、`vocabulary`、`sync`、`pause`、`resume`、`reconnect`、`quit`。所有命令需使用与正在运行的实例相同的 `--data-dir`。进程通过当前 Windows 会话内的命名事件通信，没有网络监听端口。
+支持 `show`、`devices`、`files`、`transcribe`、`vocabulary`、`sync`、`sync-now`、`pause`、`resume`、`reconnect`、`quit`。`sync` 打开日常设置，`sync-now` 立即处理设备录音。所有命令需使用与正在运行的实例相同的 `--data-dir`。进程通过当前 Windows 会话内的命名事件通信，没有网络监听端口。
 
 `files_cli.py` 是可选开发诊断入口，使用前先暂停托盘桥接。`--scan` 仅扫描；不带该参数时只访问数据目录中已选定的设备。它没有删除录音的命令行选项。
 

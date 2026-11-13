@@ -236,7 +236,7 @@ class InstanceControl:
         if already:
             self.api.CloseHandle(self.mutex); self.mutex=None
             return False
-        for name in ('show','pause','resume','reconnect','devices','files','transcribe','sync','vocabulary','quit'):
+        for name in ('show','pause','resume','reconnect','devices','files','transcribe','sync','sync-now','vocabulary','quit'):
             handle=self.api.CreateEventW(None,False,False,self.prefix+'.'+name)
             if not handle:
                 raise ctypes.WinError(ctypes.get_last_error())
@@ -385,7 +385,7 @@ class BridgeService:
         elif phase=='waiting': status,color='已连接，等待录音豆开始录音','#3b82f6'
         elif phase in ('connecting','starting'): status,color='正在连接录音豆…','#f59e0b'
         else: status,color='等待录音豆开启，自动连接中','#94a3b8'
-        return {'version':'2.4.2','pid':os.getpid(),'running':bool(self.worker and self.worker.is_alive()),
+        return {'version':'2.4.3','pid':os.getpid(),'running':bool(self.worker and self.worker.is_alive()),
                 'auto_connect':self.enabled.is_set(),'status':status,'phase':phase,'color':color,
                 'attempts':self.attempts,'last_error':self.last_error,
                 'audio_output_error':getattr(output,'error',''),
@@ -405,7 +405,7 @@ class App:
         self.control=control
         self.root=tk.Tk()
         self.root.withdraw()
-        self.root.title('录音豆工具箱 v2.4.2 · 本地音频转写')
+        self.root.title('录音豆工具箱 v2.4.3 · 本地音频转写')
         self.root.geometry('740x670')
         self.root.minsize(700,640)
         self.events=queue.Queue()
@@ -471,6 +471,7 @@ class App:
                                  lambda icon,item:self.commands.put('toggle')),
                 pystray.MenuItem('立即重连',lambda icon,item:self.commands.put('reconnect')),
                 pystray.MenuItem('转写本地音频',lambda icon,item:self.commands.put('transcribe')),
+                pystray.MenuItem('立即下载并转写设备录音',lambda icon,item:self.commands.put('sync-now')),
                 pystray.MenuItem('录音管理',lambda icon,item:self.commands.put('files')),
                 pystray.MenuItem('词库管理 / 新词审核',lambda icon,item:self.commands.put('vocabulary')),
                 pystray.MenuItem('日常录音自动处理',lambda icon,item:self.commands.put('sync')),
@@ -505,6 +506,25 @@ class App:
         if self.sync_panel and not self.sync_panel.closed:
             self.sync_panel.window.lift(); return
         self.sync_panel=SyncPanel(self,ROOT)
+
+    def sync_device_now(self):
+        if self.closing: return
+        if not load_selection(ROOT):
+            self.show_manager()
+            self.message('请先选择录音豆，再点击“立即下载并转写设备录音”。')
+            return
+        try:
+            self.pipeline.request_device_sync()
+        except (OSError, ValueError, RuntimeError) as error:
+            self.show_sync_panel()
+            messagebox.showerror('无法立即处理设备录音',str(error),parent=self.sync_panel.window)
+            return
+        if self.manager:
+            self.manager.resume_after=True
+            self.message('立即处理已排队，请关闭“设备与录音”窗口，释放设备连接。')
+        elif not self.service.enabled.is_set():
+            self.service.command('resume')
+        self.show_sync_panel()
 
     def show_library(self):
         if self.closing: return
@@ -562,6 +582,7 @@ class App:
         if command=='transcribe': self.show_transcription(); return
         if command=='vocabulary': self.show_vocabulary(); return
         if command=='sync': self.show_sync_panel(); return
+        if command=='sync-now': self.sync_device_now(); return
         if command=='toggle': command='pause' if self.service.enabled.is_set() else 'resume'
         if command in ('resume','reconnect'):
             if self.manager:
@@ -648,7 +669,7 @@ def main():
     parser.add_argument('--connect',action='store_true',help=argparse.SUPPRESS)
     parser.add_argument('--tray',action='store_true')
     parser.add_argument('--data-dir',type=Path)
-    parser.add_argument('--command',choices=['show','pause','resume','reconnect','devices','files','transcribe','sync','vocabulary','quit'])
+    parser.add_argument('--command',choices=['show','pause','resume','reconnect','devices','files','transcribe','sync','sync-now','vocabulary','quit'])
     args=parser.parse_args()
     if args.data_dir: ROOT=args.data_dir.resolve()
     elif getattr(sys,'frozen',False):

@@ -125,13 +125,14 @@ class Library(CatalogMixin):
 
     def next_job(self, output_root, allow_auto=True):
         with self.lock:
-            for key, job in sorted(self.data['jobs'].items(),key=lambda item:not item[1].get('manual',False)):
+            for key, job in sorted(self.data['jobs'].items(),key=lambda item:(
+                    not item[1].get('manual',False), not item[1].get('run_immediately',False))):
                 if is_external(job['receipt']) and not job.get('manual'): continue
-                if not allow_auto and not job.get('manual'): continue
+                if not allow_auto and not (job.get('manual') or job.get('run_immediately')): continue
                 if job['status'] in ('running','cancelled'):
                     continue
                 if job['status'] == 'complete':
-                    if job.get('manual'): continue
+                    if job.get('manual') or job.get('run_immediately'): continue
                     previous_root = job.get('output_root')
                     if previous_root == str(Path(output_root).resolve()):
                         continue
@@ -140,6 +141,26 @@ class Library(CatalogMixin):
                     continue
                 return key, json.loads(json.dumps(job))
         return None
+
+    def request_device_transcription(self, identity):
+        """Promote only unfinished daily jobs for the explicitly selected device."""
+        with self.lock:
+            changed = False
+            for job in self.data['jobs'].values():
+                if (job.get('manual') or is_external(job['receipt'])
+                        or job['receipt']['identity_hex'] != identity
+                        or job['status'] not in ('pending','failed','running')):
+                    continue
+                if not job.get('run_immediately') or job.get('retry_at',0):
+                    job.update(run_immediately=True, retry_at=0)
+                    changed = True
+            if changed:
+                self.save()
+
+    def runs_immediately(self, key):
+        with self.lock:
+            job = self.data['jobs'][key]
+            return bool(job.get('manual') or job.get('run_immediately'))
 
     def update(self, key, **changes):
         with self.lock:
@@ -182,6 +203,8 @@ class AutoPipeline:
         self.last_import = 0
         self.last_asr_use = 0
         self.receiver_id = None
+        self.immediate_lock = threading.RLock()
+        self.immediate_identity = None
 
     def start(self):
         self.worker = threading.Thread(target=self._work, name='LocalTranscription', daemon=True)
@@ -200,16 +223,39 @@ class AutoPipeline:
         self.library.retry_failed()
         self.wake_event.set()
 
+    def request_device_sync(self):
+        selection = load_selection(self.root)
+        if not selection:
+            raise ValueError('请先选择录音豆，再点击“立即下载并转写设备录音”')
+        self.runtime()  # Do not promise transcription when the model is missing.
+        with self.immediate_lock:
+            if self.immediate_identity == selection['identity_hex']:
+                return False
+            self.immediate_identity = selection['identity_hex']
+            self.next_sync = 0
+            self.last_import = 0
+            self.sync_status = '已请求立即处理，等待设备连接并停止录音 15 秒'
+        self.library.request_device_transcription(selection['identity_hex'])
+        self.wake_event.set()
+        self.message('立即下载并转写设备录音：本次不受每日时段和自动开关限制')
+        return True
+
     async def when_idle(self, receiver):
         settings = read_settings(self.root)
+        selection = load_selection(self.root)
+        with self.immediate_lock:
+            if self.immediate_identity and (not selection or selection['identity_hex'] != self.immediate_identity):
+                self.immediate_identity = None
+                self.message('已切换录音豆，取消上一设备尚未完成的立即下载请求')
+            immediate = bool(self.immediate_identity)
         if self.receiver_id != id(receiver):
             self.receiver_id = id(receiver)
             self.idle_since = None
-        if not in_schedule(settings):
+        if not immediate and not in_schedule(settings):
             self.sync_status = '等待运行时间：'+schedule_label(settings)
             self.idle_since = None
             return
-        if not settings.get('auto_sync', False):
+        if not immediate and not settings.get('auto_sync', False):
             self.sync_status = '自动下载已关闭'
             self.idle_since = None
             return
@@ -223,7 +269,6 @@ class AutoPipeline:
         if now-self.idle_since < 15 or now < self.next_sync:
             return
         self.next_sync = now+60
-        selection = load_selection(self.root)
         if not selection:
             return
         session = RecorderSession.attached(receiver, selection['identity_hex'])
@@ -235,7 +280,7 @@ class AutoPipeline:
                 return
             guard_checked = now
             current = read_settings(self.root)
-            if not current.get('auto_sync', False) or not in_schedule(current):
+            if not immediate and (not current.get('auto_sync', False) or not in_schedule(current)):
                 raise SyncDeferred('已到结束时间或自动下载已关闭')
         session.transfer_guard = transfer_guard
         try:
@@ -254,22 +299,33 @@ class AutoPipeline:
                 if read_settings(self.root).get('auto_delete', False):
                     await self.delete_saved(session, receipt)
             if chosen is None:
-                self.sync_status = '设备录音已同步，等待新录音'
+                if immediate:
+                    self.library.request_device_transcription(selection['identity_hex'])
+                    with self.immediate_lock:
+                        self.immediate_identity = None
+                    self.wake_event.set()
+                    self.sync_status = '本次设备录音已同步，未完成转写继续处理'
+                    self.message(self.sync_status)
+                else:
+                    self.sync_status = '设备录音已同步，等待新录音'
                 return
             self.current_file = chosen.title
-            self.sync_status = f'自动下载：{chosen.title}'
+            self.sync_status = f'{"立即下载" if immediate else "自动下载"}：{chosen.title}'
             self.download_progress = 0
             receiver.phase = 'syncing'
             def progress(done, total):
                 self.download_progress = min(99, 100*done/max(1,total))
             result = await download_one(session, chosen, download_folder(self.root), False, progress)
             await asyncio.to_thread(self.library.register, result)
+            if immediate:
+                self.library.request_device_transcription(selection['identity_hex'])
+                self.wake_event.set()
             if read_settings(self.root).get('auto_delete', False):
                 await self.delete_saved(session, result)
             self.download_progress = 100
             self.last_error = ''
             self.sync_status = '下载完成，已加入本地转写队列'
-            self.message(f'自动下载完成：{Path(result["path"]).name}')
+            self.message(f'{"立即下载" if immediate else "自动下载"}完成：{Path(result["path"]).name}')
             self.next_sync = 0  # next completed file, yielding to realtime between files
             self.wake_event.set()
         except RecordingStarted:
@@ -370,7 +426,7 @@ class AutoPipeline:
             current = read_settings(self.root)
             with self.library.lock:
                 cancelled=self.library.data['jobs'][key]['status']=='cancelled'
-            if cancelled or (not job.get('manual') and (not current.get('auto_transcribe', False) or not in_schedule(current))):
+            if cancelled or (not self.library.runs_immediately(key) and (not current.get('auto_transcribe', False) or not in_schedule(current))):
                 self._close_process()
                 raise InterruptedError('已到结束时间或暂停转写，已完成分段会保留')
             try:
@@ -461,6 +517,9 @@ class AutoPipeline:
                         self.last_import = time.monotonic()
                         if errors:
                             self.last_error = errors[0]
+                        with self.immediate_lock:
+                            if self.immediate_identity:
+                                self.library.request_device_transcription(self.immediate_identity)
                     allowed = settings.get('auto_transcribe', False) and in_schedule(settings)
                     task = self.library.next_job(transcript_folder(self.root),allow_auto=allowed)
                     if task:
@@ -503,5 +562,6 @@ class AutoPipeline:
             'auto_delete':bool(settings.get('auto_delete')), 'schedule':schedule_label(settings),
             'sync_status':self.sync_status, 'asr_status':self.asr_status, 'last_error':self.last_error,
             'download_progress':self.download_progress, 'transcribe_progress':self.transcribe_progress,
+            'immediate_download_pending':bool(self.immediate_identity),
             'counts':self.library.counts(), 'transcript_dir':str(transcript_folder(self.root)),
             'worker_running':bool(self.worker and self.worker.is_alive())}
