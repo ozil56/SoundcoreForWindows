@@ -60,6 +60,22 @@ def is_remote_session():
         if buffer.value: api.WTSFreeMemory(buffer)
 
 
+class BluetoothThreadCOM:
+    """Keep the BLE asyncio thread MTA when PortAudio refreshes WASAPI devices."""
+    def __enter__(self):
+        self.api=ctypes.WinDLL('ole32')
+        self.api.CoInitializeEx.argtypes=[ctypes.c_void_p,wintypes.DWORD]
+        self.api.CoInitializeEx.restype=ctypes.c_long
+        self.api.CoUninitialize.argtypes=[]
+        self.api.CoUninitialize.restype=None
+        result=self.api.CoInitializeEx(None,0)  # COINIT_MULTITHREADED
+        if result<0: raise OSError(f'蓝牙后台线程初始化失败：0x{result & 0xffffffff:08X}')
+        return self
+
+    def __exit__(self,*_):
+        self.api.CoUninitialize()
+
+
 class CableOutput:
     def __init__(self):
         candidates = [i for i,d in enumerate(sd.query_devices())
@@ -272,7 +288,8 @@ class BridgeService:
         self.worker.start()
 
     def _work(self):
-        try: asyncio.run(self.run())
+        try:
+            with BluetoothThreadCOM(): asyncio.run(self.run())
         except Exception as error:
             self.last_error=str(error)
             self.message(f'后台连接服务异常：{type(error).__name__}: {error}')

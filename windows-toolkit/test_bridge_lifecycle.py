@@ -12,6 +12,32 @@ class DummyOutput:
 
 
 class LifecycleTest(unittest.IsolatedAsyncioTestCase):
+    def test_audio_device_refresh_keeps_ble_thread_mta_in_real_windows_runtime(self):
+        # Isolate PortAudio's global cache from other tests. No audio stream or
+        # Bluetooth device is opened; this exercises the real COM regression.
+        import subprocess,sys,textwrap
+        code=textwrap.dedent('''
+            import ctypes,threading
+            import sounddevice as sd
+            from soundcore_microphone import BluetoothThreadCOM
+            errors=[]
+            def check():
+                try:
+                    with BluetoothThreadCOM():
+                        for _ in range(2):
+                            sd._terminate(); sd._initialize()
+                            apartment=ctypes.c_int(); qualifier=ctypes.c_int()
+                            hr=ctypes.windll.ole32.CoGetApartmentType(ctypes.byref(apartment),ctypes.byref(qualifier))
+                            assert hr==0 and apartment.value==1, (hr,apartment.value)
+                except BaseException as e: errors.append(repr(e))
+            worker=threading.Thread(target=check); worker.start(); worker.join(20)
+            assert not worker.is_alive(), 'Audio refresh timed out'
+            assert not errors, errors
+        ''')
+        result=subprocess.run([sys.executable,'-c',code],cwd=Path(__file__).parent,
+                              capture_output=True,text=True,timeout=30)
+        self.assertEqual(result.returncode,0,result.stderr)
+
     def test_missing_wasapi_never_opens_kernel_endpoint(self):
         from unittest.mock import patch, Mock
         devices=[{'name':'Speakers','max_output_channels':2,'hostapi':0},
