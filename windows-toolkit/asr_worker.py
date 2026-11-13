@@ -10,6 +10,10 @@ import sys
 import time
 import traceback
 
+# -I keeps bundled extensions, PYTHONPATH and user packages out of this process.
+# Only these worker helpers are added, after the interpreter's own libraries.
+sys.path.append(str(Path(__file__).resolve().parent))
+
 from tool_settings import write_json
 from vocabulary_context import ContextSelector
 

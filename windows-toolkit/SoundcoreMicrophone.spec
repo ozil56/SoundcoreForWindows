@@ -10,7 +10,8 @@ for variable, directory in [('TCL_LIBRARY','tcl8.6'),('TK_LIBRARY','tk8.6')]:
     if location.is_dir():
         os.environ.setdefault(variable,str(location))
 
-datas = [('asr_worker.py', '.'), ('tool_settings.py', '.'), ('vocabulary_context.py','.')]
+datas = [(name, 'asr_worker') for name in
+         ('asr_worker.py', 'tool_settings.py', 'vocabulary_context.py')]
 binaries = []
 hiddenimports = ['pystray._win32', 'tkinter', 'tkinter.ttk', 'tkinter.messagebox',
                  'tkinter.filedialog', '_tkinter']

@@ -22,7 +22,7 @@ SOURCE_FILES = (
     'SoundcoreMicrophone.spec', 'soundcore-microphone.ico', 'build_release.py',
     'README.md', 'THIRD_PARTY_NOTICES.md', 'test_recordings.py',
     'test_bridge_lifecycle.py', 'test_bridge_setup.py', 'test_manager_workflow.py',
-    'auto_sync.py', 'asr_worker.py', 'sync_panel.py', 'tool_settings.py',
+    'auto_sync.py', 'asr_worker.py', 'asr_process.py', 'test_asr_process.py', 'sync_panel.py', 'tool_settings.py',
     'install_local_asr.py', 'asr-requirements.txt', 'test_auto_sync.py',
     'vocabulary.py','vocabulary_context.py','vocabulary_panel.py','recording_catalog.py',
     'local_library_panel.py','test_vocabulary.py','local_transcription_panel.py','test_local_transcription.py',

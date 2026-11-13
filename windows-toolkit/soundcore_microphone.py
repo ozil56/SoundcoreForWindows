@@ -385,7 +385,7 @@ class BridgeService:
         elif phase=='waiting': status,color='已连接，等待录音豆开始录音','#3b82f6'
         elif phase in ('connecting','starting'): status,color='正在连接录音豆…','#f59e0b'
         else: status,color='等待录音豆开启，自动连接中','#94a3b8'
-        return {'version':'2.4.1','pid':os.getpid(),'running':bool(self.worker and self.worker.is_alive()),
+        return {'version':'2.4.2','pid':os.getpid(),'running':bool(self.worker and self.worker.is_alive()),
                 'auto_connect':self.enabled.is_set(),'status':status,'phase':phase,'color':color,
                 'attempts':self.attempts,'last_error':self.last_error,
                 'audio_output_error':getattr(output,'error',''),
@@ -405,7 +405,7 @@ class App:
         self.control=control
         self.root=tk.Tk()
         self.root.withdraw()
-        self.root.title('录音豆工具箱 v2.4.1 · 本地音频转写')
+        self.root.title('录音豆工具箱 v2.4.2 · 本地音频转写')
         self.root.geometry('740x670')
         self.root.minsize(700,640)
         self.events=queue.Queue()

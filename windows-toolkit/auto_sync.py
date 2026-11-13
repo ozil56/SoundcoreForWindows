@@ -11,7 +11,6 @@ import os
 from pathlib import Path
 import queue
 import subprocess
-import sys
 import threading
 import time
 
@@ -21,6 +20,7 @@ from tool_settings import read_settings, transcript_folder, write_json, in_sched
 from recording_catalog import CatalogMixin, is_external
 from vocabulary import VocabularyStore
 from tool_settings import diagnostics_folder, cache_folder
+from asr_process import start_worker
 
 
 class SyncDeferred(Exception):
@@ -331,16 +331,10 @@ class AutoPipeline:
         if self.process and self.process.poll() is None and key == self.process_key:
             return
         self._close_process()
-        worker = Path(__file__).resolve().parent/'asr_worker.py'
-        environment = os.environ.copy()
-        environment.update(PYTHONIOENCODING='utf-8', PYTHONUTF8='1', HF_HUB_OFFLINE='1',
-                           TRANSFORMERS_OFFLINE='1', HF_HUB_DISABLE_TELEMETRY='1')
         log_path = diagnostics_folder(self.root)/'local-asr.log'
         log_path.parent.mkdir(parents=True, exist_ok=True)
         with log_path.open('a', encoding='utf-8') as log:
-            self.process = subprocess.Popen([str(python), '-u', str(worker), '--model', str(model)],
-                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log,
-                encoding='utf-8', env=environment, creationflags=subprocess.CREATE_NO_WINDOW)
+            self.process = start_worker(python, model, log)
         self.process_key = key
         self.output_lines = queue.Queue()
         lines, pipe = self.output_lines, self.process.stdout
