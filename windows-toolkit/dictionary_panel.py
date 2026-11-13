@@ -5,6 +5,7 @@ from tkinter import ttk,filedialog,messagebox,simpledialog
 from ui_common import Panel
 from vocabulary import parse_terms
 from vocabulary_panel import terms_dialog
+from vocabulary_guide import show_guide
 
 STATES={'accepted':'启用','pending':'待审核','disabled':'停用','ignored':'已忽略','deleted':'已删除'}
 
@@ -92,6 +93,7 @@ class DictionaryPanel(Panel):
         self.general=TermEditor(tabs,app.pipeline.vocabulary,'通用词库');tabs.add(self.general,text='通用词库')
         self.special=ttk.Frame(tabs,padding=12);tabs.add(self.special,text='专用词库')
         self.project_list=ttk.Frame(self.special);self.project_list.pack(fill='both',expand=True)
+        ttk.Button(self.special,text='AI 提取词库指南 / Prompt',command=self.guide).pack(anchor='w',pady=(0,10),before=self.project_list)
         ttk.Label(self.project_list,text='双击项目，编辑该项目的专用词库。停用或删除的项目不会出现在自助转写的可选列表中。').pack(anchor='w',pady=(0,12))
         self.tree=ttk.Treeview(self.project_list,columns=('name','state','count'),show='headings',height=12,selectmode='browse')
         for key,label,width in [('name','项目名称',470),('state','状态',100),('count','启用词条',150)]:
@@ -120,6 +122,11 @@ class DictionaryPanel(Panel):
         try:
             key=self.projects.add(name);self.refresh();self.tree.selection_set(key);self.open_project()
         except Exception as e:self.error(e)
+
+    def guide(self):
+        keys=self.tree.selection()
+        project=next((p['name'] for p in self.projects.rows() if keys and p['id']==keys[0]),'')
+        show_guide(self.window,project)
 
     def rename(self):
         keys=self.tree.selection()
