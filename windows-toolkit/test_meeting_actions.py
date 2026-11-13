@@ -52,5 +52,18 @@ class MeetingActionTests(unittest.TestCase):
         self.assertEqual({u['segment'] for g in chunks for u in g},set(range(20)))
         for left,right in zip(chunks,chunks[1:]):self.assertEqual(left[-1],right[0])
 
+    def test_consulted_department_is_not_assigned_owner(self):
+        segments=[{'text':'你们要形成设计原则模板，需要总工办同时介入，最后跟总工办确认。','start':0,'end':10}]
+        item=self.item();item.update(owner='总工办',deliverable='设计原则方案报告',
+            evidence=[{'segment':0,'quote':segments[0]['text']}])
+        result=validate_actions({'items':[item]},segments,{0})[0]
+        self.assertEqual(result['owner'],'')
+        self.assertEqual(result['deliverable'],'')
+
+    def test_telling_someone_does_not_assign_them_responsibility(self):
+        segments=[{'text':'代码和APP不能外流，这个地方要给小王说一下。','start':0,'end':10}]
+        item=self.item();item.update(owner='小王',evidence=[{'segment':0,'quote':segments[0]['text']}])
+        self.assertEqual(validate_actions({'items':[item]},segments,{0})[0]['owner'],'')
+
 
 if __name__=='__main__':unittest.main()

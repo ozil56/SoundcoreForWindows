@@ -24,6 +24,7 @@ PROMPT=('你是严谨的中文会议执行秘书。输入是原始语音转写�
     '同一具体工作集中描述，不按一句话拆成多个重复任务。不同交付物和动作不得合并成大而空的口号。'
     'task为简短动作标题；details详细说明做什么、针对什么对象、覆盖范围、步骤或边界、原文关键数字与条件；'
     'deliverable写原文明示的交付物或完成标准；owner为明确的负责人/部门原文，不能根据发言人或“你、我们”推定；'
+    '被告知、被咨询、需要配合确认的人不等于负责人；“给某人说一下”“跟某部门确认”不能据此指定其负责全部任务。'
     'deadline逐字保留原文的时间短语及“计划、争取、可能”等限定，不推算日期；'
     'deadline_type标注明确期限/目标时点/未明确。例如“有可能在春节之前”应逐字保留并标为目标时点，不能变为硬期限或被遗漏。'
     'dependencies只写原文明示的前置条件或依赖，不要自行把工作步骤推定为前置依赖。'
@@ -35,6 +36,24 @@ PROMPT=('你是严谨的中文会议执行秘书。输入是原始语音转写�
 
 
 def compact(text):return re.sub(r'\s+','',text)
+
+
+def grounded_fields(item):
+    """Prefer unknown responsibility to promoting an addressee into an owner."""
+    item=item.copy()
+    quoted=compact('\n'.join(e['quote'] for e in item['evidence']))
+    owner=item['owner']
+    if owner:
+        name=re.escape(compact(owner))
+        assigned=re.search(r'(?:由|交给|委托|指定|安排|请|让)'+name,quoted)
+        responsible=re.search(name+r'[^，。！？；]{0,12}(?:负责|牵头|完成|整理|提交|落实|实施|办理|跟进)',quoted)
+        if not (assigned or responsible):item['owner']=''
+    # Do not turn an action into an unrequested document deliverable.
+    for artifact in ('报告','汇报材料','展示材料','清单','方案','统计表'):
+        if artifact in item['deliverable'] and artifact not in quoted:
+            item['deliverable']=''
+            break
+    return item
 
 
 def action_chunks(segments,max_chars=4200):
@@ -85,7 +104,7 @@ def validate_actions(value,segments,allowed):
             value=cleaned[key]
             if value and (compact(value) not in compact(quoted) or value in ('你','我','我们','你们','他们','大家')):
                 cleaned[key]=''
-        result.append(dict(cleaned,evidence=evidence))
+        result.append(grounded_fields(dict(cleaned,evidence=evidence)))
     return result
 
 
@@ -135,7 +154,8 @@ def extract_actions(segments,settings,state,chat,save,check,progress,limit_error
         work['groups']=groups;save()
     merged=[]
     for group in work['groups']:
-        members=[items[i] for i in group]
+        # Apply conservative field checks to resumed checkpoints as well.
+        members=[grounded_fields(items[i]) for i in group]
         first=members[0].copy()
         for field in ('details','deliverable','owner','deadline','dependencies'):
             first[field]='；'.join(dict.fromkeys(item[field] for item in members if item[field]))
