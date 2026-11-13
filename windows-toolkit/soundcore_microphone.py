@@ -25,6 +25,11 @@ import soundcore_stream as protocol
 from bridge_setup import AutoStart, environment_summary, GUIDE
 from recorder_files import load_selection
 from device_manager import DeviceManager
+from auto_sync import AutoPipeline
+from sync_panel import SyncPanel
+from local_library_panel import LocalLibraryPanel
+from vocabulary_panel import VocabularyPanel
+from tool_settings import diagnostics_folder
 
 ROOT = Path(__file__).resolve().parent
 # The host Python installation has Tcl in tcl/, outside Tk's fallback search.
@@ -39,6 +44,14 @@ class CableOutput:
         candidates = [i for i,d in enumerate(sd.query_devices())
                       if d['name'].startswith('CABLE Input') and d['max_output_channels']>=2
                       and sd.query_hostapis(d['hostapi'])['name']=='Windows WASAPI']
+        self.backend='Windows WASAPI'
+        if not candidates:
+            # RDP audio redirection can hide local WASAPI endpoints while the
+            # virtual cable's kernel-streaming endpoint remains available.
+            candidates = [i for i,d in enumerate(sd.query_devices())
+                if d['name']=='Output (VB-Audio Point)' and d['max_output_channels']>=2
+                and sd.query_hostapis(d['hostapi'])['name']=='Windows WDM-KS']
+            self.backend='Windows WDM-KS'
         if len(candidates)!=1:
             raise RuntimeError('未找到 CABLE Input。请确认 VB-CABLE 已安装，必要时重启电脑。')
         self.device = candidates[0]
@@ -49,7 +62,8 @@ class CableOutput:
         self.dropped_bytes = 0
         self.stream = sd.RawOutputStream(device=self.device,samplerate=16000,channels=2,
             dtype='int16',blocksize=320,latency=.08,
-            extra_settings=sd.WasapiSettings(auto_convert=True),callback=self.callback)
+            extra_settings=sd.WasapiSettings(auto_convert=True) if self.backend=='Windows WASAPI' else None,
+            callback=self.callback)
 
     def callback(self,outdata,frames,time_info,status):
         needed = frames*4
@@ -92,6 +106,47 @@ class CableOutput:
             self.stream.close()
 
 
+class OptionalCableOutput:
+    """A missing sound endpoint must not prevent BLE recording backups."""
+    def __init__(self):
+        self.output=None
+        self.error=''
+        self.retry_at=0
+
+    @property
+    def underruns(self): return self.output.underruns if self.output else 0
+
+    @property
+    def dropped_bytes(self): return self.output.dropped_bytes if self.output else 0
+
+    def try_open(self):
+        if self.output or time.monotonic()<self.retry_at: return
+        self.retry_at=time.monotonic()+5
+        try:
+            if self.error:
+                # PortAudio caches endpoints. We own no open stream here, so
+                # refresh after a reconnect/hotplug instead of caching absence.
+                sd._terminate()
+                sd._initialize()
+            output=CableOutput()
+            output.__enter__()
+            self.output=output
+            self.error=''
+        except Exception as error:
+            self.error=str(error)
+
+    def push(self,pcm):
+        self.try_open()
+        if self.output: self.output.push(pcm)
+
+    def __enter__(self):
+        self.try_open()
+        return self
+
+    def __exit__(self,*args):
+        if self.output: self.output.__exit__(*args)
+
+
 def icon_image(color='#3b82f6'):
     """Simple microphone silhouette, legible at Windows tray size."""
     image=Image.new('RGBA',(64,64),(0,0,0,0))
@@ -131,7 +186,7 @@ class InstanceControl:
         if already:
             self.api.CloseHandle(self.mutex); self.mutex=None
             return False
-        for name in ('show','pause','resume','reconnect','devices','files','quit'):
+        for name in ('show','pause','resume','reconnect','devices','files','sync','vocabulary','quit'):
             handle=self.api.CreateEventW(None,False,False,self.prefix+'.'+name)
             if not handle:
                 raise ctypes.WinError(ctypes.get_last_error())
@@ -156,7 +211,7 @@ class InstanceControl:
 
 class BridgeService:
     """Reconnect supervisor, running BLE on one worker event loop."""
-    def __init__(self,root,message,receiver_factory=protocol.Receiver,output_factory=CableOutput,retry_seconds=5):
+    def __init__(self,root,message,receiver_factory=protocol.Receiver,output_factory=OptionalCableOutput,retry_seconds=5,pipeline=None):
         self.root=root
         self.message=message
         self.receiver_factory=receiver_factory
@@ -176,6 +231,7 @@ class BridgeService:
         self.last_error_kind=''
         self.total_frames=0
         self.total_samples=0
+        self.pipeline=pipeline
 
     def start(self):
         self.worker=threading.Thread(target=self._work,name='SoundcoreBLE',daemon=True)
@@ -201,7 +257,7 @@ class BridgeService:
             except RuntimeError: pass
 
     async def attempt(self):
-        folder=self.root/'diagnostics'/'tray-runtime'
+        folder=diagnostics_folder(self.root)/'tray-runtime'
         folder.mkdir(parents=True,exist_ok=True)
         receiver=None
         try:
@@ -209,6 +265,8 @@ class BridgeService:
                 self.output=output
                 receiver=self.receiver_factory(folder,pcm_callback=output.push,save_audio=False)
                 self.receiver=receiver
+                if self.pipeline:
+                    receiver.idle_callback=self.pipeline.when_idle
                 await receiver.run(seconds=None,wait_for_recording=True)
         finally:
             if receiver:
@@ -255,13 +313,17 @@ class BridgeService:
         if self.shutdown.is_set(): status,color='正在退出…','#94a3b8'
         elif not self.enabled.is_set(): status,color='已暂停自动连接','#94a3b8'
         elif self.last_error_kind=='cable': status,color='请先安装 VB-CABLE 虚拟声卡并重启','#f59e0b'
+        elif fresh and phase=='streaming' and getattr(output,'error',''): status,color='正在收音，虚拟声卡暂不可用','#f59e0b'
         elif fresh and phase=='streaming': status,color='正在收音 → Typeless','#22c55e'
+        elif phase=='syncing': status,color='设备空闲，正在自动下载录音','#3b82f6'
         elif phase=='waiting': status,color='已连接，等待录音豆开始录音','#3b82f6'
         elif phase in ('connecting','starting'): status,color='正在连接录音豆…','#f59e0b'
         else: status,color='等待录音豆开启，自动连接中','#94a3b8'
-        return {'pid':os.getpid(),'running':bool(self.worker and self.worker.is_alive()),
+        return {'version':'2.3.0','pid':os.getpid(),'running':bool(self.worker and self.worker.is_alive()),
                 'auto_connect':self.enabled.is_set(),'status':status,'phase':phase,'color':color,
                 'attempts':self.attempts,'last_error':self.last_error,
+                'audio_output_error':getattr(output,'error',''),
+                'audio_backend':getattr(getattr(output,'output',output),'backend',''),
                 'frames':self.total_frames+(receiver.frames_ok if receiver else 0),
                 'seconds':(self.total_samples+(receiver.samples if receiver else 0))/16000,
                 'peak':receiver.last_peak if fresh else 0,
@@ -276,7 +338,7 @@ class App:
         self.control=control
         self.root=tk.Tk()
         self.root.withdraw()
-        self.root.title('录音豆工具箱 v2.1 · 麦克风与录音导出')
+        self.root.title('录音豆工具箱 v2.3 · 词库与录音管理')
         self.root.geometry('680x610')
         self.root.minsize(650,580)
         self.events=queue.Queue()
@@ -289,16 +351,20 @@ class App:
         self.autostart_var=tk.BooleanVar(value=self.autostart.enabled())
         self.guide_window=None
         self.manager=None
+        self.sync_panel=None
+        self.library_panel=None
+        self.vocabulary_panel=None
         self.status=tk.StringVar(value='后台启动中…')
         self.stats=tk.StringVar(value='等待录音豆')
         self.level=tk.DoubleVar(value=0)
         self.log=logging.getLogger('soundcore.bridge')
         self.log.setLevel(logging.INFO)
-        handler=RotatingFileHandler(ROOT/'diagnostics'/'tray-bridge.log',maxBytes=2_000_000,backupCount=3,encoding='utf-8')
+        handler=RotatingFileHandler(diagnostics_folder(ROOT)/'tray-bridge.log',maxBytes=2_000_000,backupCount=3,encoding='utf-8')
         handler.setFormatter(logging.Formatter('%(asctime)s %(message)s'))
         self.log.addHandler(handler)
         protocol.log=self.message
-        self.service=BridgeService(ROOT,self.message)
+        self.pipeline=AutoPipeline(ROOT,self.message)
+        self.service=BridgeService(ROOT,self.message,pipeline=self.pipeline)
         if not load_selection(ROOT): self.service.enabled.clear()
         outer=ttk.Frame(self.root,padding=22); outer.pack(fill='both',expand=True)
         ttk.Label(outer,text='录音豆 → Typeless',font=('Microsoft YaHei UI',20,'bold')).pack(anchor='w')
@@ -310,17 +376,20 @@ class App:
         self.toggle_button.pack(side='left')
         ttk.Button(buttons,text='立即重连',command=lambda:self.dispatch('reconnect')).pack(side='left',padx=10)
         ttk.Button(buttons,text='收起到托盘',command=self.root.withdraw).pack(side='left')
-        ttk.Button(buttons,text='设备与录音',command=self.show_manager).pack(side='right')
+        ttk.Button(buttons,text='录音管理',command=self.show_library).pack(side='right')
+        ttk.Button(buttons,text='词库管理',command=self.show_vocabulary).pack(side='right',padx=6)
+        ttk.Button(buttons,text='选择录音豆',command=self.show_manager).pack(side='right')
         settings=ttk.Frame(outer); settings.pack(fill='x',pady=(12,0))
         ttk.Checkbutton(settings,text='登录 Windows 后自动启动',variable=self.autostart_var,
                         command=self.change_autostart).pack(side='left')
         ttk.Button(settings,text='首次使用 / 检查环境',command=self.show_guide).pack(side='right')
+        ttk.Button(settings,text='自动同步与转写',command=self.show_sync_panel).pack(side='right',padx=8)
         ttk.Label(outer,text='开启录音豆后会自动连接，断线后自动重连。\n'
                   'Typeless 麦克风保持选择 CABLE Output，用右 Alt 开始、结束听写。\n'
                   '关闭此窗口后仍在托盘运行；彻底退出请右键托盘图标。\n'
                   '用完弹起录音豆侧键，停止设备自身的录音。',
                   wraplength=560,justify='left').pack(anchor='w',pady=16)
-        ttk.Label(outer,text='麦克风音频不落盘；在“设备与录音”中可主动导出已完成的录音。\n绿色：收音中；蓝色：已连接；灰色：等待或暂停。',
+        ttk.Label(outer,text='自动同步、校验后删除与本地转写可在设置面板中启用并设置运行时间。\n绿色：收音中；蓝色：已连接或下载中；灰色：等待或暂停。',
                   foreground='#666666',wraplength=560).pack(anchor='w')
         self.messages=tk.Text(outer,height=8,font=('Consolas',9),wrap='word',state='disabled')
         self.messages.pack(fill='both',expand=True,pady=(12,0))
@@ -332,6 +401,8 @@ class App:
                                  lambda icon,item:self.commands.put('toggle')),
                 pystray.MenuItem('立即重连',lambda icon,item:self.commands.put('reconnect')),
                 pystray.MenuItem('录音管理',lambda icon,item:self.commands.put('files')),
+                pystray.MenuItem('词库管理 / 新词审核',lambda icon,item:self.commands.put('vocabulary')),
+                pystray.MenuItem('自动同步与转写',lambda icon,item:self.commands.put('sync')),
                 pystray.MenuItem('选择录音豆',lambda icon,item:self.commands.put('devices')),
                 pystray.MenuItem('首次使用 / 检查环境',lambda icon,item:self.commands.put('guide')),
                 pystray.Menu.SEPARATOR,
@@ -347,6 +418,7 @@ class App:
         self.tray_thread=threading.Thread(target=tray_run,name='SoundcoreTray',daemon=True)
         self.tray_thread.start()
         self.service.start()
+        self.pipeline.start()
         self.root.after(100,self.update)
         if not start_hidden or not load_selection(ROOT): self.root.after(100,self.show)
 
@@ -356,6 +428,24 @@ class App:
 
     def show(self):
         self.root.deiconify(); self.root.lift()
+
+    def show_sync_panel(self):
+        if self.closing: return
+        if self.sync_panel and not self.sync_panel.closed:
+            self.sync_panel.window.lift(); return
+        self.sync_panel=SyncPanel(self,ROOT)
+
+    def show_library(self):
+        if self.closing: return
+        if self.library_panel and not self.library_panel.closed:
+            self.library_panel.window.lift(); return
+        self.library_panel=LocalLibraryPanel(self,ROOT)
+
+    def show_vocabulary(self):
+        if self.closing: return
+        if self.vocabulary_panel and not self.vocabulary_panel.closed:
+            self.vocabulary_panel.refresh(); self.vocabulary_panel.window.lift(); return
+        self.vocabulary_panel=VocabularyPanel(self,ROOT)
 
     def show_manager(self,tab='devices'):
         if self.closing: return
@@ -391,7 +481,9 @@ class App:
         if command=='show': self.show(); return
         if command=='guide': self.show_guide(); return
         if command=='devices': self.show_manager(); return
-        if command=='files': self.show_manager('files'); return
+        if command=='files': self.show_library(); return
+        if command=='vocabulary': self.show_vocabulary(); return
+        if command=='sync': self.show_sync_panel(); return
         if command=='toggle': command='pause' if self.service.enabled.is_set() else 'resume'
         if command in ('resume','reconnect'):
             if self.manager:
@@ -408,6 +500,10 @@ class App:
             self.quit_deadline=time.monotonic()+50
             self.root.withdraw()
             if self.manager: self.manager.close()
+            if self.sync_panel: self.sync_panel.close()
+            if self.library_panel: self.library_panel.close()
+            if self.vocabulary_panel: self.vocabulary_panel.close()
+            self.pipeline.stop()
         self.service.command(command)
         self.tray.update_menu()
 
@@ -426,6 +522,7 @@ class App:
                 self.messages.delete('1.0','50.0')
             self.messages.configure(state='disabled')
         snapshot=self.service.snapshot()
+        snapshot['automation']=self.pipeline.snapshot()
         if self.manager:
             snapshot['status']='设备与录音窗口已打开，麦克风暂时暂停'
             snapshot['recording_manager']={'busy':self.manager.busy,
@@ -437,7 +534,7 @@ class App:
                 'status':self.manager.status.get(),
                 'download_dir':str(self.manager.output_folder)}
         elif not load_selection(ROOT):
-            snapshot['status']='首次使用：点击“设备与录音”选择自己的录音豆'
+            snapshot['status']='首次使用：点击“选择录音豆”选择自己的设备'
         self.status.set(snapshot['status'])
         self.level.set(min(100,snapshot['peak']*200))
         self.stats.set(f"累计收音 {snapshot['seconds']:.1f} 秒   本次错误 {snapshot['decode_errors']}   丢帧 {snapshot['missing_frames']}")
@@ -453,12 +550,12 @@ class App:
                             console_window=bool(ctypes.windll.kernel32.GetConsoleWindow()),
                             updated_at=dt.datetime.now().astimezone().isoformat())
             try:
-                target=ROOT/'diagnostics'/'bridge-status.json'
+                target=diagnostics_folder(ROOT)/'bridge-status.json'
                 temporary=target.with_suffix('.tmp')
                 temporary.write_text(json.dumps(snapshot,ensure_ascii=False,indent=2),encoding='utf-8')
                 os.replace(temporary,target)
             except OSError as error: self.log.warning('Status write: %s',error)
-        if self.closing and ((not snapshot['running'] and self.manager is None) or time.monotonic()>self.quit_deadline):
+        if self.closing and ((not snapshot['running'] and self.manager is None and not snapshot['automation']['worker_running']) or time.monotonic()>self.quit_deadline):
             self.tray.stop()
             self.control.close()
             self.root.destroy()
@@ -472,12 +569,15 @@ def main():
     parser.add_argument('--connect',action='store_true',help=argparse.SUPPRESS)
     parser.add_argument('--tray',action='store_true')
     parser.add_argument('--data-dir',type=Path)
-    parser.add_argument('--command',choices=['show','pause','resume','reconnect','devices','files','quit'])
+    parser.add_argument('--command',choices=['show','pause','resume','reconnect','devices','files','sync','vocabulary','quit'])
     args=parser.parse_args()
     if args.data_dir: ROOT=args.data_dir.resolve()
-    elif getattr(sys,'frozen',False): ROOT=Path(sys.executable).resolve().parent
+    elif getattr(sys,'frozen',False):
+        ROOT=Path(sys.executable).resolve().parent
+        organized=ROOT.parent/'数据'
+        if (organized/'tool-settings.json').is_file(): ROOT=organized
     protocol.ROOT=ROOT
-    (ROOT/'diagnostics').mkdir(parents=True,exist_ok=True)
+    diagnostics_folder(ROOT).mkdir(parents=True,exist_ok=True)
     control=InstanceControl(ROOT)
     if args.command:
         return 0 if control.send(args.command) else 1
@@ -496,5 +596,6 @@ if __name__=='__main__':
         raise SystemExit(main())
     except Exception:
         import traceback
-        (ROOT/'diagnostics'/'startup-error.log').write_text(traceback.format_exc(),encoding='utf-8')
+        diagnostics_folder(ROOT).mkdir(parents=True,exist_ok=True)
+        (diagnostics_folder(ROOT)/'startup-error.log').write_text(traceback.format_exc(),encoding='utf-8')
         raise

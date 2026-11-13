@@ -59,3 +59,10 @@ app.*.map.json
 *.wav
 *.opus
 *.opus.bin
+/windows-toolkit/.asr-venv/
+/windows-toolkit/models/
+/windows-toolkit/sync-state.json
+/windows-toolkit/transcription-cache/
+/windows-toolkit/转写文本/
+/windows-toolkit/词库/
+*.mp3

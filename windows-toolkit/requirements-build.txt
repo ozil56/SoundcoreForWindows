@@ -1,3 +1,4 @@
 -r microphone-requirements.txt
 pyinstaller==6.22.3
 pyinstaller-hooks-contrib==2026.10
+pypinyin==0.55.0

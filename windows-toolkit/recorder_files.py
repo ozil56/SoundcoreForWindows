@@ -16,6 +16,11 @@ import wave
 
 from bleak import BleakClient, BleakScanner
 import soundcore_stream as protocol
+from tool_settings import read_settings, update_settings, write_json
+
+
+class RecordingStarted(Exception):
+    """Yield a background transfer to physical recording immediately."""
 
 
 @dataclass
@@ -200,7 +205,9 @@ class WavExport:
                 return {'path':str(target), 'frames':self.frames, 'seconds':self.samples/16000,
                         'expected_bytes':self.expected, 'complete':True,
                         'file_id':self.recording.file_id, 'identity_hex':self.base.split('_')[0],
-                        'sha256':digest, 'bytes':target.stat().st_size}
+                        'sha256':digest, 'bytes':target.stat().st_size,
+                        'list_size':self.recording.size, 'end_time':self.recording.end_time,
+                        'downloaded_at':dt.datetime.now().astimezone().isoformat()}
             except FileExistsError:
                 continue
         raise RuntimeError('同名文件过多，请选择其他导出文件夹')
@@ -212,6 +219,23 @@ class WavExport:
 
 
 class RecorderSession(protocol.Receiver):
+    @classmethod
+    def attached(cls, receiver, identity):
+        """Borrow the live connection on the same event loop; never disconnect it."""
+        session = cls.__new__(cls)
+        session.client, session.queue = receiver.client, receiver.queue
+        session.identity = bytes.fromhex(identity)
+        session.session_key = receiver.session_key
+        generation = receiver.recording_generation
+        session.recording_guard = lambda: receiver.recording_active or receiver.recording_generation != generation
+        return session
+
+    def check_idle(self):
+        if getattr(self, 'transfer_guard', None):
+            self.transfer_guard()
+        if getattr(self, 'recording_guard', lambda: False)():
+            raise RecordingStarted('设备开始录音，后台下载已让出连接')
+
     def __init__(self, identity):
         super().__init__(Path('.'), save_audio=False)
         self.identity = bytes.fromhex(identity)
@@ -290,15 +314,22 @@ class RecorderSession(protocol.Receiver):
             raise ValueError('此录音正在录制或已不在设备上。请先停止录音，再刷新列表。')
         writer = WavExport(folder, self.identity.hex(), selected, self.session_key)
         try:
+            self.check_idle()
             protocol.log(f'Requesting completed recording {selected.file_id}, size={selected.size}')
             await self.send(0x1A, 7, struct.pack('<IIB', 0, selected.file_id, 0))
             protocol.log('Offline request sent; waiting for file header')
             deadline = time.monotonic()+20
             while not writer.done:
+                self.check_idle()
                 timeout = deadline-time.monotonic()
                 if timeout <= 0:
                     raise TimeoutError('等待录音数据超时，未生成完成文件。请保持设备靠近并重试。')
                 packet = await asyncio.wait_for(self.queue.get(), timeout)
+                self.check_idle()
+                # Also protect manual exports when the side button is pressed.
+                if ((packet[5:7] == b'\x1a\x06' and len(packet) >= 14 and struct.unpack_from('<I',packet,9)[0])
+                        or (packet[5:7] == b'\x18\x82' and len(packet)>10 and packet[9] == 1)):
+                    raise RecordingStarted('设备开始录音，下载已中止，原录音保留')
                 if packet[6] not in (8, 0x12):
                     protocol.log(f'File RX {packet[5]:02X}/{packet[6]:02X} status={packet[4]:02X} bytes={len(packet)-10}')
                 if writer.feed(packet):
@@ -306,6 +337,7 @@ class RecorderSession(protocol.Receiver):
                     progress(writer.frames*160, writer.expected)
                 if not self.client.is_connected:
                     raise ConnectionError('蓝牙已断开，未生成完成文件')
+            self.check_idle()
             return writer.finish()
         finally:
             writer.close()
@@ -322,6 +354,7 @@ class RecorderSession(protocol.Receiver):
             raise ValueError('文件已不在设备上，请刷新列表')
         if files[file_id].active:
             raise ValueError('不能删除正在录制的文件，请先停止录音')
+        self.check_idle()
         response = await self.request(0x1A, 0x10, struct.pack('<I', file_id))
         check_status(response)
         # A command acknowledgement alone is not proof of successful deletion.
@@ -343,25 +376,18 @@ async def download_one(session, recording, folder, delete_after=False, progress=
     result = await session.export(recording, folder, progress)
     # Keep a local receipt even if a later delete request fails or is cancelled.
     receipt = Path(result['path']).with_suffix('.wav.json')
-    receipt.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding='utf-8')
+    write_json(receipt, result)
     if delete_after:
         verify_download(result)
         await session.delete(recording.file_id)
         result['deleted_from_device'] = True
-        receipt.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding='utf-8')
+        write_json(receipt, result)
     return result
 
 
 def download_folder(root):
-    try:
-        settings = json.loads((Path(root)/'tool-settings.json').read_text(encoding='utf-8'))
-        return Path(settings['download_dir'])
-    except (OSError, ValueError, KeyError, TypeError):
-        return Path(root)/'导出的录音'
+    return Path(read_settings(root).get('download_dir') or Path(root)/'导出的录音')
 
 
 def set_download_folder(root, folder):
-    path = Path(root)/'tool-settings.json'
-    temporary = path.with_suffix('.tmp')
-    temporary.write_text(json.dumps({'download_dir':str(Path(folder).resolve())}, ensure_ascii=False, indent=2), encoding='utf-8')
-    os.replace(temporary, path)
+    update_settings(root, download_dir=str(Path(folder).resolve()))

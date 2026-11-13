@@ -22,8 +22,12 @@ SOURCE_FILES = (
     'SoundcoreMicrophone.spec', 'soundcore-microphone.ico', 'build_release.py',
     'README.md', 'THIRD_PARTY_NOTICES.md', 'test_recordings.py',
     'test_bridge_lifecycle.py', 'test_bridge_setup.py', 'test_manager_workflow.py',
+    'auto_sync.py', 'asr_worker.py', 'sync_panel.py', 'tool_settings.py',
+    'install_local_asr.py', 'asr-requirements.txt', 'test_auto_sync.py',
+    'vocabulary.py','vocabulary_context.py','vocabulary_panel.py','recording_catalog.py',
+    'local_library_panel.py','test_vocabulary.py',
 )
-FORBIDDEN_NAMES = {'recorder-identity.json', 'tool-settings.json', 'bridge-status.json'}
+FORBIDDEN_NAMES = {'recorder-identity.json', 'tool-settings.json', 'bridge-status.json', 'sync-state.json'}
 FORBIDDEN_SUFFIXES = {'.wav', '.opus', '.bin', '.log', '.apk', '.lnk'}
 
 
@@ -38,7 +42,7 @@ def validate_public_files(folder):
             continue
         relative = path.relative_to(folder)
         if (path.name in FORBIDDEN_NAMES or path.suffix.lower() in FORBIDDEN_SUFFIXES
-                or {'diagnostics','__pycache__','.venv'}.intersection(relative.parts)):
+                or {'diagnostics','__pycache__','.venv','.asr-venv','transcription-cache','models'}.intersection(relative.parts)):
             raise ValueError(f'Runtime data or development environment found in release: {relative}')
 
 

@@ -19,3 +19,5 @@ Windows BLE 协议实现参考 [tacshi/Soundcore](https://github.com/tacshi/Soun
 发布构建从相应 Python 发行包复制可用的许可证文件，并附上 Xiph、PortAudio、Tcl/Tk 的许可文本。各组件保留其原有版权与许可条款；本仓库没有替上游或第三方组件指定新许可证。
 
 VB-CABLE 是 VB-Audio 的独立虚拟声卡产品：<https://vb-audio.com/Cable/>。请从官方渠道取得并按其许可使用。Typeless 同样由其厂商独立提供，不包含在本项目中。
+
+可选本地识别环境另行下载 [Qwen3-ASR-1.7B-hf](https://huggingface.co/Qwen/Qwen3-ASR-1.7B-hf)（Apache-2.0）、[Silero VAD](https://github.com/snakers4/silero-vad)（MIT）、[PyTorch](https://pytorch.org/) 和 [Transformers](https://github.com/huggingface/transformers) 等依赖，保留各自许可。基础 ZIP 不包含模型权重或此独立环境。

@@ -1,6 +1,6 @@
 # SoundcoreForWindows
 
-Windows 上的 **soundcore Work / 安克录音豆 D3200** 托盘工具：连接 Typeless 等麦克风应用，管理和下载设备录音。
+Windows 上的 **soundcore Work / 安克录音豆 D3200** 托盘工具：连接 Typeless 等麦克风应用，管理设备录音，按时自动同步并在本地转写中文。
 
 基于 [tacshi/Soundcore](https://github.com/tacshi/Soundcore) 的 BLE 协议研究，保留上游 fork 关系与历史。Windows 实现在 [`windows-toolkit/`](windows-toolkit/) 中，使用 Python、Bleak 和 Tk；**不是上游 Flutter 应用的 Windows runner**。上游移动端与 macOS 项目说明见 [README.upstream.md](README.upstream.md)。
 
@@ -8,9 +8,9 @@ An independent Windows tray application for soundcore Work / D3200: BLE audio to
 
 ## 下载与开始使用
 
-1. 从 [Releases](https://github.com/ozil56/SoundcoreForWindows/releases) 下载 `SoundcoreForWindows-v2.1.0-windows-x64.zip`，完整解压到可写的固定文件夹，保留 `_internal`。
+1. 从 [Releases](https://github.com/ozil56/SoundcoreForWindows/releases) 下载已发布的 Windows x64 ZIP，完整解压到可写的固定文件夹，保留 `_internal`。
 2. 打开 Windows 蓝牙，取出并唤醒录音豆。手机 App 和其他电脑需要释放与它的连接。
-3. 运行 `SoundcoreMicrophone.exe` → **设备与录音** → 扫描，选中自己的录音豆并点击 **记住所选录音豆**。
+3. 运行 `SoundcoreMicrophone.exe` → **选择录音豆** → 扫描，选中自己的录音豆并点击 **记住所选录音豆**。
 4. 以后程序只会自动连接选定的设备。无需在 Windows「添加设备」中配对，也无需安装 Python 或连接安卓手机。
 
 要求：**Windows x64**、支持 BLE 的蓝牙适配器及正常工作的厂商驱动。已实测 Windows 11 x64；其他电脑、适配器和固件仍需验证。只支持使用同一协议的 soundcore Work / D3200，不适用于任意蓝牙录音器或 soundcore 耳机。
@@ -22,11 +22,27 @@ An independent Windows tray application for soundcore Work / D3200: BLE audio to
 1. 从 [VB-Audio 官网](https://vb-audio.com/Cable/) 单独下载、安装 VB-CABLE；按照安装器要求重启。
 2. Typeless 的麦克风选择 **CABLE Output**，关闭 **语音输入时静音**。
 3. Windows 的扬声器输出保持原来的扬声器或耳机。**CABLE Input** 是本程序写入声音的端口，不是 Typeless 的麦克风入口。
-4. 关闭录音管理面板，按下录音豆侧键，等托盘显示正在收音，再用 Typeless 的听写快捷键输入。
+4. 关闭 **设备内录音** 窗口，按下录音豆侧键，等托盘显示正在收音，再用 Typeless 的听写快捷键输入。本地录音管理面板可以保持打开。
 
 可在主窗口勾选 **登录 Windows 后自动启动**。启动后驻留托盘，没有 CMD 窗口；关闭主窗口仅收起，右键托盘可退出。
 
 设备未录音时，程序保持 BLE 连接并等待侧键，不向 Typeless 发送录音音频。断线后自动重连。用完弹起侧键，停止设备自身的录音。
+
+## 词库与重新转写（v2.3）
+
+托盘 **词库管理 / 新词审核** 支持 UTF-8 TXT 导入（每行一个词或短语）、审核、编辑、停用、导出及变更记录。通用词库参与每次转写；专用词库仅用于选定录音的新任务。
+
+托盘 **录音管理** 查看已保存的本地音频、指定项目，选择 **用专用词库重新转写** 即可补充术语。手动任务不受每日自动时段限制，新旧文本分别保存，可查看历史并切换当前版本。无需重新连接设备或重新下载原音频。本地面板不会暂停实时麦克风。
+
+词库、录音、转写结果均留在本机。完整词库按段检索后作为模型提示，不是硬性文本替换；每次任务记录词库快照。详见 [Windows 使用与开发说明](windows-toolkit/README.md#v23-词库与录音库)。
+
+## 自动同步与本地转写
+
+右键托盘 → **自动同步与转写**：选择音频、文本两个根目录，开启自动下载、校验后删除和本地转写。每日时间段支持跨午夜，例如 **20:00–08:00**。设备在盒上仍连接时也可同步；程序按实际连接与录音状态判断。电脑需保持开机，程序不自动唤醒系统。
+
+下载完整保存并重新核对 SHA256 后才允许自动删除对应设备原件。已下载录音自动加入转写队列，文本按录音开始日期存为 **年 / 月 / 日** 三层目录。录音开始时后台下载让出连接；未完成下载下次重新尝试，转写则保留已完成分段。
+
+本地转写使用独立的 **Qwen3-ASR-1.7B** 模型环境，需要额外安装和下载，不使用 Typeless 服务、不上传音频。基础麦克风和手动管理无需安装模型。安装与行为细节见 [Windows 开发与安装说明](windows-toolkit/README.md#本地转写环境可选)。
 
 ## 录音管理
 
@@ -42,7 +58,7 @@ An independent Windows tray application for soundcore Work / D3200: BLE audio to
 
 **下载历史文件前，请先停止设备录音。** 实测固件 04.73 在录音中可能返回当前实时文件头，程序会阻止此时下载历史文件。管理面板打开时暂时暂停麦克风桥接，关闭后恢复之前的状态。
 
-只做录音管理不需要 VB-CABLE 或 Typeless。长录音经 BLE 传输需要时间；目前没有接入上游的 Wi-Fi SoftAP 批量传输，也没有断点续传或重复文件自动跳过。
+只做录音管理不需要 VB-CABLE 或 Typeless。长录音经 BLE 传输需要时间；目前没有接入上游的 Wi-Fi SoftAP 批量传输。中断下载会从头重试；自动同步会校验并跳过已完整保存的录音，手动重复下载则另存副本。
 
 ## 飞书绑定与系统配对
 
@@ -57,13 +73,15 @@ An independent Windows tray application for soundcore Work / D3200: BLE audio to
 | 路径 | 用途 |
 | --- | --- |
 | `recorder-identity.json` | 用户主动选择的录音豆标识 |
-| `tool-settings.json` | 固定下载目录 |
+| `tool-settings.json` | 下载与文本目录、运行时间段、本地模型及自动处理开关 |
+| `sync-state.json` / `transcription-cache/` | 持久转写队列与已完成分段 |
 | `diagnostics/` | 轮换诊断日志与程序状态，不记录加密密钥 |
 | `导出的录音/` | 默认下载目录，可在面板中更改 |
+| `转写文本/YYYY/MM/DD/` | 默认文本目录，按录音开始日期归档 |
 
 麦克风桥接音频仅在内存中传给虚拟声卡；主动下载的录音保存到指定目录。本程序不把录音上传到服务器。Typeless 或其他后续音频应用有各自的数据处理方式。
 
-升级时先退出旧版，把自己的两个配置文件复制到新版目录，按需保留下载目录，再重新设置自启动。不要同时运行两个副本争用同一只录音豆。需要指定其他数据目录时可使用 `--data-dir`，详见开发说明。
+升级时先退出旧版，保留自己的配置文件、队列、分段缓存及音频和文本目录；可使用 `--data-dir` 让新版继续使用原数据目录，再重新设置自启动。模型环境位置也保存在配置里。不要同时运行两个副本争用同一只录音豆，详见开发说明。
 
 ## 构建与验证
 
@@ -74,7 +92,9 @@ An independent Windows tray application for soundcore Work / D3200: BLE audio to
 - BLE 音频桥接、Typeless 实际听写、自动重连、托盘与登录自启动。
 - 完整导出一条 **1,032.58 秒 / 51,629 帧**录音，分片连续且设备文件头长度一致。
 - 经使用者授权，下载、校验并删除一条 **11.94 秒 / 597 帧**测试录音，复查设备列表确认未删除其他录音。
-- 18 项自动化测试，包括中断/损坏不删除、活动录音保护、重复下载不覆盖、设备选择不因空扫描丢失。
+- 空闲时自动下载并校验删除一条 **17.94 秒**录音，重新读取设备列表确认删除结果。
+- 三份已下载录音均使用 Qwen3-ASR-1.7B 在 RTX 5060 Ti 上完成本地中文转写，已验证中文路径、录音日期归档和分段进度保存。
+- 29 项自动化测试，包括中断/损坏不删除、活动录音保护、重复下载不覆盖、跨午夜时间段、任务恢复、日期归档和远程桌面音频端口回退。
 
 这些硬件结果不等于已经验证所有 D3200 设备或固件。发布包为自行构建的未签名 Windows 可执行程序。
 

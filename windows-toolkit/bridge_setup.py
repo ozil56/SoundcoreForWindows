@@ -53,7 +53,8 @@ def environment_summary(root):
     lines=[f'系统：{platform.system()} {platform.release()} / {platform.machine()}']
     try:
         devices=sd.query_devices()
-        cable_in=any(d['name'].startswith('CABLE Input') and d['max_output_channels']>0 for d in devices)
+        cable_in=any((d['name'].startswith('CABLE Input') or d['name']=='Output (VB-Audio Point)')
+                     and d['max_output_channels']>0 for d in devices)
         cable_out=any(d['name'].startswith('CABLE Output') and d['max_input_channels']>0 for d in devices)
         lines.append('虚拟声卡：已检测到输入和输出端口' if cable_in and cable_out else
                      '虚拟声卡：未就绪。请独立安装 VB-CABLE，重启后重新打开本程序。')
@@ -65,7 +66,7 @@ def environment_summary(root):
         if len(identity)!=6: raise ValueError('identity length')
         lines.append('录音豆：已记住选择的设备，无需在 Windows 中配对。')
     except (OSError,ValueError,KeyError):
-        lines.append('录音豆：尚未选择，请打开“设备与录音”扫描并选择。')
+        lines.append('录音豆：尚未选择，请点击“选择录音豆”扫描并选择。')
     return '\n'.join(lines)
 
 

@@ -101,6 +101,9 @@ class Receiver:
         self.pcm_callback = pcm_callback
         self.save_audio = save_audio
         self.stopped = False
+        self.recording_active = False
+        self.recording_generation = 0
+        self.idle_callback = None
         self.report = {'created': dt.datetime.now().astimezone().isoformat(), 'scope': 'current recording only'}
 
     def notify(self, _, data):
@@ -123,6 +126,18 @@ class Receiver:
             packet = bytes(self.buffer[:length])
             del self.buffer[:length]
             if (sum(packet[:-1]) & 255) == packet[-1]:
+                active = None
+                if packet[5:7] == b'\x1a\x06' and len(packet) >= 14:
+                    active = bool(struct.unpack_from('<I',packet,9)[0])
+                elif packet[5:7] == b'\x18\x82' and len(packet)>10:
+                    if packet[9] in (0,1,2):
+                        active = packet[9] == 1
+                elif packet[5:7] == b'\x01\x01' and len(packet[9:-1]) > 50:
+                    active = packet[59] == 1
+                if active is not None:
+                    if active and not self.recording_active:
+                        self.recording_generation += 1
+                    self.recording_active = active
                 self.queue.put_nowait(packet)
 
     async def send(self, typ, cmd, payload=b''):
@@ -307,6 +322,12 @@ class Receiver:
                     if now>=next_log:
                         log(f'audio frames={self.frames_ok}, errors={self.frames_failed}, seconds={self.samples/16000:.2f}, peak={self.peak/32768:.3f}')
                         next_log=now+30
+                    if self.idle_callback:
+                        await self.idle_callback(self)
+                        # Background requests may have consumed a start notification;
+                        # notify() tracks state independently of the packet consumer.
+                        if self.recording_active and self.file_id is None:
+                            await self.start_current()
             finally:
                 # Stop transfer when cancelled/reconnecting; leave physical recording alone.
                 if self.client.is_connected:

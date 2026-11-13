@@ -12,6 +12,19 @@ class DummyOutput:
 
 
 class LifecycleTest(unittest.IsolatedAsyncioTestCase):
+    def test_rdp_fallback_only_opens_virtual_cable_kernel_endpoint(self):
+        from unittest.mock import patch, Mock
+        devices=[{'name':'Speakers','max_output_channels':2,'hostapi':0},
+                 {'name':'Output (VB-Audio Point)','max_output_channels':16,'hostapi':1}]
+        with patch('soundcore_microphone.sd.query_devices',return_value=devices), \
+             patch('soundcore_microphone.sd.query_hostapis',side_effect=lambda i:{'name':['Windows WASAPI','Windows WDM-KS'][i]}), \
+             patch('soundcore_microphone.sd.RawOutputStream',return_value=Mock()) as stream:
+            output=CableOutput()
+            self.assertEqual(output.backend,'Windows WDM-KS')
+            self.assertEqual(stream.call_args.kwargs['device'],1)
+            self.assertIsNone(stream.call_args.kwargs['extra_settings'])
+            self.assertEqual(stream.call_args.kwargs['samplerate'],16000)
+
     async def test_missing_device_retry_pause_resume_and_exit(self):
         attempts=[]
         closed=[]
