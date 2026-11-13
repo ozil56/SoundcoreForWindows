@@ -80,6 +80,7 @@ class WorkflowTests(unittest.TestCase):
                 if 'p0' in schema['properties']:
                     paragraphs=json.loads(text)['paragraphs']
                     parts.extend(paragraphs.values());return dict(paragraphs,notes='项目讨论和明确待办')
+                if 'items' in schema['properties']:return {'items':[]}
                 return {'title':'项目/会议:审查','main':'主要内容','todos':'无明确待办事项'}
             with patch('ollama_summary.chat',side_effect=chat):
                 result=enrich(output,{},lambda *_:None)

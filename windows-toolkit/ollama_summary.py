@@ -3,11 +3,13 @@ import datetime as dt
 import hashlib
 import json
 import re
+import time
 from pathlib import Path
 import urllib.request
 from urllib.parse import urlsplit
 
 from tool_settings import write_json
+from meeting_actions import extract_actions,render_actions
 
 DEFAULT_URL='http://127.0.0.1:11434'
 DEFAULT_MODEL='qwen3:30b-instruct'
@@ -34,10 +36,15 @@ def models(url):
 def chat(settings,system,text,schema,limit=3000):
     payload={'model':settings.get('ollama_model') or DEFAULT_MODEL,'stream':False,'think':False,
         'messages':[{'role':'system','content':system},{'role':'user','content':text}],
-        'format':schema,'options':{'temperature':0,'num_ctx':8192 if len(text)<2500 else 16384,'num_predict':limit},'keep_alive':0}
+        'format':schema,'options':{'temperature':0,'num_ctx':8192 if len(text)<2500 else 16384,'num_predict':limit},
+        'keep_alive':'5m' if settings.get('_minutes_session') else 0}
     request=urllib.request.Request(server_url(settings.get('ollama_url') or DEFAULT_URL)+'/api/chat',
         data=json.dumps(payload,ensure_ascii=False).encode(),headers={'Content-Type':'application/json'})
+    settings['_ollama_used']=True
     with urllib.request.urlopen(request,timeout=600) as response:data=json.load(response)
+    if '_call_metrics' in settings:
+        settings['_call_metrics'].append({key:data.get(key,0) for key in
+            ('load_duration','prompt_eval_duration','eval_duration','eval_count')})
     if not data.get('done') or data.get('done_reason')=='length':raise OllamaOutputLimit('Ollama 输出未完整结束')
     value=json.loads(data['message']['content'])
     for key in schema['required']:
@@ -87,11 +94,32 @@ def render_minutes(title,main,todos,polished_parts):
     title=re.sub(r'\s+',' ',title).strip()
     body='\n\n'.join(part.strip() for part in polished_parts if part.strip())
     return (f'# {title}\n\n## 主要内容\n\n{markdown_list(main)}'
-            f'\n\n## 待办事项\n\n{markdown_list(todos)}'
+            f'\n\n## 待办事项\n\n{render_actions(todos) if isinstance(todos,list) else markdown_list(todos)}'
             f'\n\n## 具体完整内容的润色\n\n{body}\n')
 
 
 def enrich(output,settings,progress,stop=None):
+    began=time.monotonic();session=dict(settings,_minutes_session=True,_ollama_used=False,_call_metrics=[])
+    try:result=_enrich(output,session,progress,stop)
+    finally:
+        if session['_ollama_used']:
+            # Keep weights loaded between parts, then release the GPU for ASR.
+            try:
+                request=urllib.request.Request(server_url(session.get('ollama_url') or DEFAULT_URL)+'/api/generate',
+                    data=json.dumps({'model':session.get('ollama_model') or DEFAULT_MODEL,'keep_alive':0}).encode(),
+                    headers={'Content-Type':'application/json'})
+                with urllib.request.urlopen(request,timeout=30) as response:response.read()
+            except OSError:pass
+    result.update(minutes_elapsed_seconds=time.monotonic()-began,minutes_model=session.get('ollama_model') or DEFAULT_MODEL,
+        ollama_calls=len(session['_call_metrics']),
+        ollama_load_seconds=sum(m['load_duration'] for m in session['_call_metrics'])/1e9,
+        ollama_prompt_seconds=sum(m['prompt_eval_duration'] for m in session['_call_metrics'])/1e9,
+        ollama_generation_seconds=sum(m['eval_duration'] for m in session['_call_metrics'])/1e9,
+        ollama_generated_tokens=sum(m['eval_count'] for m in session['_call_metrics']))
+    return result
+
+
+def _enrich(output,settings,progress,stop=None):
     """Return paths; every section of the transcript is polished, never a sample."""
     output=Path(output)
     meta=json.loads(Path(str(output)+'.json').read_text(encoding='utf-8-sig'))
@@ -145,7 +173,7 @@ def enrich(output,settings,progress,stop=None):
         return {'polished':'\n\n'.join(polished),'notes':value['notes'],
                 'verbatim_fallbacks':fallbacks,'paragraphs':len(paragraphs)}
     for index in range(len(state['parts']),len(chunks)):
-        check();progress(f'整理纪要 {index+1}/{len(chunks)}',100*index/max(1,len(chunks)))
+        check();progress(f'整理纪要 {index+1}/{len(chunks)}',65*index/max(1,len(chunks)))
         state['parts'].append(polish(chunks[index]))
         write_json(checkpoint,state)
     notes=[p['notes'] for p in state['parts']]
@@ -163,7 +191,7 @@ def enrich(output,settings,progress,stop=None):
             compact.append(item['notes'])
         if sum(map(len,compact)) >= sum(map(len,notes)):raise ValueError('会议要点合并未能收敛，保留原结果')
         notes=compact
-    check();progress('生成标题、主要内容与待办',95)
+    check();progress('生成标题与主要内容',70)
     overview=state.get('overview')
     if not overview:
         overview=chat(settings,'依据会议记录生成准确简短的中文标题（不带日期，不超过 28 字）、主要内容、待办事项。'
@@ -171,6 +199,7 @@ def enrich(output,settings,progress,stop=None):
             '主要内容与待办事项分别逐条换行，保留每项的具体条件和责任信息。'
             '返回 JSON title、main、todos，字段均为字符串。','\n'.join(notes),schema(title='string',main='string',todos='string'),4000)
         state['overview']=overview;write_json(checkpoint,state)
+    actions=extract_actions(segments,settings,state,chat,lambda:write_json(checkpoint,state),check,progress,OllamaOutputLimit)
     check()
     title=safe_title(overview['title'])
     date=dt.datetime.fromisoformat(meta['recorded_at'])
@@ -178,11 +207,12 @@ def enrich(output,settings,progress,stop=None):
     target=folder/f'{date:%Y%m%d-%H%M%S}-{title}.txt'
     raw=write_unique(target,output.read_text(encoding='utf-8-sig'))
     if not Path(str(raw)+'.json').exists():write_json(Path(str(raw)+'.json'),dict(meta,generated_title=title,original_transcript=str(output)))
-    body=render_minutes(title,overview['main'],overview['todos'],[p['polished'] for p in state['parts']])
+    body=render_minutes(title,overview['main'],actions,[p['polished'] for p in state['parts']])
     minutes=write_unique(raw.with_name(raw.stem+'-纪要.md'),body)
     write_json(Path(str(minutes)+'.json'),{'source_transcript':str(output),'named_transcript':str(raw),
         'model':settings.get('ollama_model',DEFAULT_MODEL),'generated_at':dt.datetime.now().astimezone().isoformat(),
-        'parts':len(chunks),'source_sha256':meta['source']['sha256'],'format':'markdown',
+        'parts':len(chunks),'source_sha256':meta['source']['sha256'],'format':'markdown','actions':actions,
         'verbatim_fallbacks':sum(p.get('verbatim_fallbacks',0) for p in state['parts'])})
+    progress('纪要已生成',100)
     return {'state':'complete','title':title,'named_output':str(raw),'minutes_output':str(minutes),
             'verbatim_fallbacks':sum(p.get('verbatim_fallbacks',0) for p in state['parts'])}

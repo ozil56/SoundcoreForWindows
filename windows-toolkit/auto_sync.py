@@ -623,12 +623,13 @@ class AutoPipeline:
                             key,job=post
                             self.active_job=key
                             self._close_process()  # ASR and Ollama take turns using GPU memory.
-                            self.library.update(key,enrichment_state='running')
+                            self.library.update(key,enrichment_state='running',enrichment_started_at=dt.datetime.now().astimezone().isoformat())
                             try:
                                 def progress(label,percent):
                                     self.post_status=label;self.transcribe_progress=percent
                                 result=enrich(job['output'],settings,progress,EnrichmentControl(self,key))
-                                self.library.update(key,enrichment_state=result.pop('state'),**result,enrichment_error='')
+                                self.library.update(key,enrichment_state=result.pop('state'),**result,enrichment_error='',
+                                    enrichment_completed_at=dt.datetime.now().astimezone().isoformat())
                             except InterruptedError:
                                 self.library.update(key,enrichment_state='pending')
                             except Exception as error:
