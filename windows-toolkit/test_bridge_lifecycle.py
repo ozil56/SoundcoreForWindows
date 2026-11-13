@@ -2,7 +2,7 @@
 import asyncio
 from pathlib import Path
 import unittest
-from soundcore_microphone import BridgeService, CableOutput, InstanceControl
+from soundcore_microphone import BridgeService, CableOutput, OptionalCableOutput, InstanceControl, is_remote_session
 
 
 class DummyOutput:
@@ -12,18 +12,105 @@ class DummyOutput:
 
 
 class LifecycleTest(unittest.IsolatedAsyncioTestCase):
-    def test_rdp_fallback_only_opens_virtual_cable_kernel_endpoint(self):
+    def test_missing_wasapi_never_opens_kernel_endpoint(self):
         from unittest.mock import patch, Mock
         devices=[{'name':'Speakers','max_output_channels':2,'hostapi':0},
                  {'name':'Output (VB-Audio Point)','max_output_channels':16,'hostapi':1}]
         with patch('soundcore_microphone.sd.query_devices',return_value=devices), \
              patch('soundcore_microphone.sd.query_hostapis',side_effect=lambda i:{'name':['Windows WASAPI','Windows WDM-KS'][i]}), \
              patch('soundcore_microphone.sd.RawOutputStream',return_value=Mock()) as stream:
+            with self.assertRaisesRegex(RuntimeError,'CABLE Input'): CableOutput()
+            stream.assert_not_called()
+
+    def test_only_standard_cable_input_is_used(self):
+        from unittest.mock import patch, Mock
+        devices=[{'name':'CABLE In 16ch (VB-Audio Virtual Cable)','max_output_channels':2,'hostapi':0},
+                 {'name':'Output (VB-Audio Point)','max_output_channels':16,'hostapi':1},
+                 {'name':'CABLE Input (VB-Audio Virtual Cable)','max_output_channels':2,'hostapi':0}]
+        with patch('soundcore_microphone.sd.query_devices',return_value=devices), \
+             patch('soundcore_microphone.sd.query_hostapis',side_effect=lambda i:{'name':['Windows WASAPI','Windows WDM-KS'][i]}), \
+             patch('soundcore_microphone.sd.RawOutputStream',return_value=Mock()) as stream:
             output=CableOutput()
-            self.assertEqual(output.backend,'Windows WDM-KS')
-            self.assertEqual(stream.call_args.kwargs['device'],1)
-            self.assertIsNone(stream.call_args.kwargs['extra_settings'])
-            self.assertEqual(stream.call_args.kwargs['samplerate'],16000)
+            self.assertEqual(output.backend,'Windows WASAPI')
+            self.assertEqual(stream.call_args.kwargs['device'],2)
+            self.assertIsNotNone(stream.call_args.kwargs['extra_settings'])
+
+    def test_remote_session_detection_reads_live_protocol_and_frees_buffer(self):
+        import ctypes
+        from unittest.mock import patch, Mock
+        for protocol in (0,2):
+            value=ctypes.c_ushort(protocol)
+            api=Mock()
+            def query(server,session,kind,buffer,size):
+                self.assertEqual(session,0xffffffff); self.assertEqual(kind,16)
+                buffer._obj.value=ctypes.addressof(value)
+                size._obj.value=ctypes.sizeof(value)
+                return True
+            api.WTSQuerySessionInformationW.side_effect=query
+            with patch('soundcore_microphone.ctypes.WinDLL',return_value=api):
+                self.assertEqual(is_remote_session(),protocol!=0)
+            api.WTSFreeMemory.assert_called_once()
+
+    def test_rdp_suspends_audio_and_console_reopens_same_wasapi_with_fresh_devices(self):
+        from unittest.mock import patch, MagicMock
+        output=OptionalCableOutput()
+        with patch('soundcore_microphone.is_remote_session',return_value=True) as remote, \
+             patch('soundcore_microphone.sd._terminate') as terminate, \
+             patch('soundcore_microphone.sd._initialize') as initialize, \
+             patch('soundcore_microphone.CableOutput') as factory:
+            first,second=MagicMock(),MagicMock()
+            first.stream.active=second.stream.active=True
+            factory.side_effect=[first,second]
+            output.__enter__(); output.push(b'audio')
+            factory.assert_not_called(); initialize.assert_not_called()
+            self.assertTrue(output.remote_session)
+            remote.return_value=False; output.poll(); output.push(b'local')
+            first.push.assert_called_once_with(b'local')
+            output.poll()
+            self.assertEqual(factory.call_count,1)
+            remote.return_value=True; output.poll(); output.push(b'remote')
+            first.__exit__.assert_called_once()
+            self.assertIsNone(output.output)
+            remote.return_value=False; output.poll()
+            self.assertIs(output.output,second)
+            self.assertEqual(initialize.call_count,2); self.assertEqual(terminate.call_count,2)
+            self.assertFalse(output.remote_session)
+            output.__exit__(); second.__exit__.assert_called_once()
+
+    def test_inactive_wasapi_stream_is_closed_before_refresh(self):
+        from unittest.mock import patch, MagicMock
+        output=OptionalCableOutput(); old=MagicMock(); old.stream.active=False
+        output.output=old
+        with patch('soundcore_microphone.is_remote_session',return_value=False), \
+             patch('soundcore_microphone.sd._terminate') as terminate, \
+             patch('soundcore_microphone.sd._initialize'), \
+             patch('soundcore_microphone.CableOutput') as factory:
+            def refresh(): old.__exit__.assert_called_once()
+            terminate.side_effect=refresh
+            output.poll()
+            self.assertIs(output.output,factory.return_value)
+            output.__exit__()
+
+    async def test_audio_session_monitor_keeps_device_connection_and_idle_sync(self):
+        from unittest.mock import Mock
+        output=DummyOutput(); output.poll=Mock()
+        receiver=Mock()
+        receiver.frames_ok=receiver.samples=0
+        async def run(**kwargs): await asyncio.Event().wait()
+        receiver.run=run
+        pipeline=Mock()
+        service=BridgeService(Path(__file__).parent,lambda _:None,
+            lambda *args,**kwargs:receiver,lambda:output,pipeline=pipeline)
+        task=asyncio.create_task(service.attempt())
+        try:
+            async with asyncio.timeout(3):
+                while not output.poll.called: await asyncio.sleep(.02)
+            self.assertIs(service.receiver,receiver)
+            self.assertIs(receiver.idle_callback,pipeline.when_idle)
+        finally:
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError): await task
+        self.assertIsNone(service.output)
 
     async def test_missing_device_retry_pause_resume_and_exit(self):
         attempts=[]

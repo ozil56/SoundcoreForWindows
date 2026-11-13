@@ -40,19 +40,32 @@ for variable, subfolder in [('TCL_LIBRARY','tcl8.6'),('TK_LIBRARY','tk8.6')]:
         os.environ.setdefault(variable,str(library))
 
 
+def is_remote_session():
+    """Query the live session, including RDP -> physical-console transitions."""
+    api=ctypes.WinDLL('wtsapi32',use_last_error=True)
+    api.WTSQuerySessionInformationW.argtypes=[wintypes.HANDLE,wintypes.DWORD,ctypes.c_int,
+        ctypes.POINTER(ctypes.c_void_p),ctypes.POINTER(wintypes.DWORD)]
+    api.WTSQuerySessionInformationW.restype=wintypes.BOOL
+    api.WTSFreeMemory.argtypes=[ctypes.c_void_p]
+    api.WTSFreeMemory.restype=None
+    buffer=ctypes.c_void_p(); size=wintypes.DWORD()
+    try:
+        # WTS_CURRENT_SESSION / WTSClientProtocolType: 0 = console, 2 = RDP.
+        if api.WTSQuerySessionInformationW(None,0xffffffff,16,ctypes.byref(buffer),ctypes.byref(size)):
+            if buffer.value and size.value>=ctypes.sizeof(ctypes.c_ushort):
+                return ctypes.cast(buffer,ctypes.POINTER(ctypes.c_ushort)).contents.value != 0
+        # A PC without Remote Desktop Services may not expose WTS information.
+        return bool(ctypes.windll.user32.GetSystemMetrics(0x1000))
+    finally:
+        if buffer.value: api.WTSFreeMemory(buffer)
+
+
 class CableOutput:
     def __init__(self):
         candidates = [i for i,d in enumerate(sd.query_devices())
                       if d['name'].startswith('CABLE Input') and d['max_output_channels']>=2
                       and sd.query_hostapis(d['hostapi'])['name']=='Windows WASAPI']
         self.backend='Windows WASAPI'
-        if not candidates:
-            # RDP audio redirection can hide local WASAPI endpoints while the
-            # virtual cable's kernel-streaming endpoint remains available.
-            candidates = [i for i,d in enumerate(sd.query_devices())
-                if d['name']=='Output (VB-Audio Point)' and d['max_output_channels']>=2
-                and sd.query_hostapis(d['hostapi'])['name']=='Windows WDM-KS']
-            self.backend='Windows WDM-KS'
         if len(candidates)!=1:
             raise RuntimeError('未找到 CABLE Input。请确认 VB-CABLE 已安装，必要时重启电脑。')
         self.device = candidates[0]
@@ -63,7 +76,7 @@ class CableOutput:
         self.dropped_bytes = 0
         self.stream = sd.RawOutputStream(device=self.device,samplerate=16000,channels=2,
             dtype='int16',blocksize=320,latency=.08,
-            extra_settings=sd.WasapiSettings(auto_convert=True) if self.backend=='Windows WASAPI' else None,
+            extra_settings=sd.WasapiSettings(auto_convert=True),
             callback=self.callback)
 
     def callback(self,outdata,frames,time_info,status):
@@ -108,11 +121,12 @@ class CableOutput:
 
 
 class OptionalCableOutput:
-    """A missing sound endpoint must not prevent BLE recording backups."""
+    """Console-only WASAPI output; recording backups remain independent."""
     def __init__(self):
         self.output=None
         self.error=''
         self.retry_at=0
+        self.remote_session=False
 
     @property
     def underruns(self): return self.output.underruns if self.output else 0
@@ -120,15 +134,35 @@ class OptionalCableOutput:
     @property
     def dropped_bytes(self): return self.output.dropped_bytes if self.output else 0
 
-    def try_open(self):
-        if self.output or time.monotonic()<self.retry_at: return
+    def close(self):
+        output,self.output=self.output,None
+        if output:
+            try: output.__exit__()
+            except Exception as error: self.error=str(error)
+
+    def poll(self):
+        if is_remote_session():
+            self.remote_session=True
+            self.close()
+            self.error=''
+            self.retry_at=0
+            return
+        if self.remote_session:
+            self.remote_session=False
+            self.retry_at=0
+        if self.output:
+            try:
+                if self.output.stream.active: return
+            except Exception as error: self.error=str(error)
+            self.close()
+            self.retry_at=0
+        if time.monotonic()<self.retry_at: return
         self.retry_at=time.monotonic()+5
         try:
-            if self.error:
-                # PortAudio caches endpoints. We own no open stream here, so
-                # refresh after a reconnect/hotplug instead of caching absence.
-                sd._terminate()
-                sd._initialize()
+            # No stream is open here. Drop cached RDP endpoints before opening
+            # the same CABLE Input on the physical console; never choose KS.
+            sd._terminate()
+            sd._initialize()
             output=CableOutput()
             output.__enter__()
             self.output=output
@@ -137,15 +171,14 @@ class OptionalCableOutput:
             self.error=str(error)
 
     def push(self,pcm):
-        self.try_open()
         if self.output: self.output.push(pcm)
 
     def __enter__(self):
-        self.try_open()
+        self.poll()
         return self
 
     def __exit__(self,*args):
-        if self.output: self.output.__exit__(*args)
+        self.close()
 
 
 def icon_image(color='#3b82f6'):
@@ -261,6 +294,7 @@ class BridgeService:
         folder=diagnostics_folder(self.root)/'tray-runtime'
         folder.mkdir(parents=True,exist_ok=True)
         receiver=None
+        monitor=None
         try:
             with self.output_factory() as output:
                 self.output=output
@@ -268,7 +302,19 @@ class BridgeService:
                 self.receiver=receiver
                 if self.pipeline:
                     receiver.idle_callback=self.pipeline.when_idle
-                await receiver.run(seconds=None,wait_for_recording=True)
+                if hasattr(output,'poll'):
+                    async def watch_audio():
+                        while True:
+                            await asyncio.sleep(1)
+                            output.poll()
+                    monitor=asyncio.create_task(watch_audio())
+                try:
+                    await receiver.run(seconds=None,wait_for_recording=True)
+                finally:
+                    if monitor:
+                        monitor.cancel()
+                        try: await monitor
+                        except asyncio.CancelledError: pass
         finally:
             if receiver:
                 self.total_frames+=receiver.frames_ok
@@ -314,16 +360,19 @@ class BridgeService:
         if self.shutdown.is_set(): status,color='正在退出…','#94a3b8'
         elif not self.enabled.is_set(): status,color='已暂停自动连接','#94a3b8'
         elif self.last_error_kind=='cable': status,color='请先安装 VB-CABLE 虚拟声卡并重启','#f59e0b'
+        elif fresh and phase=='streaming' and getattr(output,'remote_session',False): status,color='远程会话：麦克风桥接暂停，设备仍在录音','#94a3b8'
         elif fresh and phase=='streaming' and getattr(output,'error',''): status,color='正在收音，虚拟声卡暂不可用','#f59e0b'
         elif fresh and phase=='streaming': status,color='正在收音 → Typeless','#22c55e'
         elif phase=='syncing': status,color='设备空闲，正在自动下载录音','#3b82f6'
+        elif phase=='waiting' and getattr(output,'remote_session',False): status,color='已连接；远程会话不启用麦克风桥接','#3b82f6'
         elif phase=='waiting': status,color='已连接，等待录音豆开始录音','#3b82f6'
         elif phase in ('connecting','starting'): status,color='正在连接录音豆…','#f59e0b'
         else: status,color='等待录音豆开启，自动连接中','#94a3b8'
-        return {'version':'2.4.0','pid':os.getpid(),'running':bool(self.worker and self.worker.is_alive()),
+        return {'version':'2.4.1','pid':os.getpid(),'running':bool(self.worker and self.worker.is_alive()),
                 'auto_connect':self.enabled.is_set(),'status':status,'phase':phase,'color':color,
                 'attempts':self.attempts,'last_error':self.last_error,
                 'audio_output_error':getattr(output,'error',''),
+                'audio_suspended_remote':getattr(output,'remote_session',False),
                 'audio_backend':getattr(getattr(output,'output',output),'backend',''),
                 'frames':self.total_frames+(receiver.frames_ok if receiver else 0),
                 'seconds':(self.total_samples+(receiver.samples if receiver else 0))/16000,
@@ -339,7 +388,7 @@ class App:
         self.control=control
         self.root=tk.Tk()
         self.root.withdraw()
-        self.root.title('录音豆工具箱 v2.4 · 本地音频转写')
+        self.root.title('录音豆工具箱 v2.4.1 · 本地音频转写')
         self.root.geometry('740x670')
         self.root.minsize(700,640)
         self.events=queue.Queue()

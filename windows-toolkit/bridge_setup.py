@@ -53,7 +53,7 @@ def environment_summary(root):
     lines=[f'系统：{platform.system()} {platform.release()} / {platform.machine()}']
     try:
         devices=sd.query_devices()
-        cable_in=any((d['name'].startswith('CABLE Input') or d['name']=='Output (VB-Audio Point)')
+        cable_in=any(d['name'].startswith('CABLE Input')
                      and d['max_output_channels']>0 for d in devices)
         cable_out=any(d['name'].startswith('CABLE Output') and d['max_input_channels']>0 for d in devices)
         lines.append('虚拟声卡：已检测到输入和输出端口' if cable_in and cable_out else
