@@ -18,13 +18,30 @@ from recorder_files import (RecorderSession, RecordingStarted, download_folder,
                             download_one, load_selection, verify_download)
 from tool_settings import read_settings, transcript_folder, write_json, in_schedule, schedule_label
 from recording_catalog import CatalogMixin, is_external
-from vocabulary import VocabularyStore
+from vocabulary import VocabularyStore,ProjectVocabularies
 from tool_settings import diagnostics_folder, cache_folder
 from asr_process import start_worker
+from ollama_summary import enrich
 
 
 class SyncDeferred(Exception):
     pass
+
+
+class EnrichmentControl:
+    """Pause between persisted parts when the schedule ends or ASR needs the GPU."""
+    def __init__(self, pipeline, key):
+        self.pipeline, self.key = pipeline, key
+
+    def is_set(self):
+        pipeline = self.pipeline
+        settings = read_settings(pipeline.root)
+        if pipeline.stop_event.is_set() or not settings.get('ollama_enabled', False):
+            return True
+        allowed = settings.get('auto_transcribe', False) and in_schedule(settings)
+        if not allowed and not pipeline.library.runs_immediately(self.key):
+            return True
+        return pipeline.library.next_job(transcript_folder(pipeline.root), allow_auto=allowed) is not None
 
 
 def recording_date(receipt):
@@ -132,11 +149,7 @@ class Library(CatalogMixin):
                 if job['status'] in ('running','cancelled'):
                     continue
                 if job['status'] == 'complete':
-                    if job.get('manual') or job.get('run_immediately'): continue
-                    previous_root = job.get('output_root')
-                    if previous_root == str(Path(output_root).resolve()):
-                        continue
-                    job['status'] = 'pending'
+                    continue  # A new destination must not rerun the entire history.
                 if job.get('retry_at', 0) > time.time():
                     continue
                 return key, json.loads(json.dumps(job))
@@ -186,6 +199,8 @@ class AutoPipeline:
         self.root, self.message = Path(root), message
         self.library = Library(root)
         self.vocabulary = VocabularyStore(root)
+        self.projects = ProjectVocabularies(root)
+        self.projects.migrate_text_files()
         self.stop_event = threading.Event()
         self.wake_event = threading.Event()
         self.worker = None
@@ -205,6 +220,12 @@ class AutoPipeline:
         self.receiver_id = None
         self.immediate_lock = threading.RLock()
         self.immediate_identity = None
+        self.device_pending = None
+        self.device_checked_at = None
+        self.inventory_identity = None
+        self.next_inventory = 0
+        self.post_status = ''
+        self.active_job = None
 
     def start(self):
         self.worker = threading.Thread(target=self._work, name='LocalTranscription', daemon=True)
@@ -222,6 +243,20 @@ class AutoPipeline:
         self.last_import = 0
         self.library.retry_failed()
         self.wake_event.set()
+
+    def request_local_transcription(self):
+        self.runtime()
+        self.library.import_folder(download_folder(self.root))
+        count=0
+        with self.library.lock:
+            for job in self.library.data['jobs'].values():
+                if job['status'] in ('pending','failed','running'):
+                    job.update(run_immediately=True,retry_at=0)
+                    count+=1
+            self.library.save()
+        self.wake_event.set()
+        self.message(f'立即转写全部剩余本地录音：{count} 个任务')
+        return count
 
     def request_device_sync(self):
         selection = load_selection(self.root)
@@ -247,7 +282,27 @@ class AutoPipeline:
             if self.immediate_identity and (not selection or selection['identity_hex'] != self.immediate_identity):
                 self.immediate_identity = None
                 self.message('已切换录音豆，取消上一设备尚未完成的立即下载请求')
+                return
             immediate = bool(self.immediate_identity)
+        if selection and getattr(receiver,'identity_hex',selection['identity_hex'])!=selection['identity_hex']:
+            return
+        # A read-only inventory lets the dashboard show device backlog outside
+        # the transfer window. Never contend with physical recording.
+        if (selection and not receiver.recording_active and receiver.file_id is None
+                and time.monotonic() >= self.next_inventory and not immediate):
+            self.next_inventory=time.monotonic()+120
+            try:
+                inventory=RecorderSession.attached(receiver,selection['identity_hex'])
+                listed=await inventory.list_files()
+                missing=0
+                for item in listed:
+                    if not item.active and not await asyncio.to_thread(self.library.has_download,selection['identity_hex'],item):
+                        missing+=1
+                self.device_pending=missing
+                self.device_checked_at=dt.datetime.now().astimezone().isoformat()
+                self.inventory_identity=selection['identity_hex']
+            except Exception:
+                pass
         if self.receiver_id != id(receiver):
             self.receiver_id = id(receiver)
             self.idle_since = None
@@ -286,6 +341,12 @@ class AutoPipeline:
         try:
             self.sync_status = '正在检查新录音'
             files = await session.list_files()
+            self.device_pending=0
+            for item in files:
+                if not item.active and not await asyncio.to_thread(self.library.has_download,selection['identity_hex'],item):
+                    self.device_pending+=1
+            self.device_checked_at=dt.datetime.now().astimezone().isoformat()
+            self.inventory_identity=selection['identity_hex']
             if receiver.recording_active or any(f.active for f in files):
                 self.idle_since = None
                 self.sync_status = '录音中，后台下载等待'
@@ -317,6 +378,7 @@ class AutoPipeline:
                 self.download_progress = min(99, 100*done/max(1,total))
             result = await download_one(session, chosen, download_folder(self.root), False, progress)
             await asyncio.to_thread(self.library.register, result)
+            self.device_pending=max(0,(self.device_pending or 1)-1)
             if immediate:
                 self.library.request_device_transcription(selection['identity_hex'])
                 self.wake_event.set()
@@ -364,7 +426,7 @@ class AutoPipeline:
         python = Path(settings.get('asr_python') or self.root/'.asr-venv'/'Scripts'/'python.exe')
         model = Path(settings.get('asr_model_dir') or self.root/'models'/'Qwen3-ASR-1.7B-hf')
         if not python.is_file() or not (model/'config.json').is_file() or not list(model.glob('*.safetensors')):
-            raise RuntimeError('尚未配置本地模型，请打开“自动同步与转写”设置')
+            raise RuntimeError('尚未配置本地模型，请打开“设置”配置运行程序和模型目录')
         return python, model
 
     def _close_process(self):
@@ -418,7 +480,9 @@ class AutoPipeline:
         self._start_process()
         checkpoint = cache_folder(self.root)/(hashlib.sha256(key.encode()).hexdigest()+'.json')
         request = {'path':receipt['path'], 'sha256':receipt['sha256'], 'checkpoint':str(checkpoint),
-                   'vocabulary':job['vocabulary'], 'reference':job.get('reference')}
+                   'vocabulary':job['vocabulary'], 'reference':job.get('reference'),
+                   'asr_options':{'chunk_seconds':read_settings(self.root).get('asr_chunk_seconds',60),
+                                  'max_new_tokens':read_settings(self.root).get('asr_max_new_tokens',4096)}}
         self.process.stdin.write(json.dumps(request, ensure_ascii=False)+'\n')
         self.process.stdin.flush()
         deadline = time.monotonic()+900
@@ -452,6 +516,8 @@ class AutoPipeline:
                     finished_at=dt.datetime.now().astimezone().isoformat(),job_created_at=job.get('created_at'))
                 output = self.publish_text(receipt, event, output_root)
                 self.library.finish_version(key,output,job,output_root)
+                if read_settings(self.root).get('ollama_enabled',False):
+                    self.library.update(key,enrichment_state='pending',enrichment_retry_at=0)
                 self.asr_status = f'转写完成：{output.name}'
                 self.transcribe_progress = 100
                 self.last_error = ''
@@ -464,6 +530,9 @@ class AutoPipeline:
 
     def publish_text(self, receipt, result, output_root):
         target = dated_target(output_root, receipt)
+        settings=read_settings(self.root)
+        if settings.get('ollama_enabled') and receipt.get('seconds',0)>=settings.get('ollama_min_seconds',120):
+            target=target.parent/'原始转写'/target.name
         if result.get('version_id'):
             label='本地转写' if result.get('kind')=='local' else '专用词库'
             target=target.with_stem(target.stem+'_'+label+'_'+result['version_id'][:8])
@@ -524,6 +593,7 @@ class AutoPipeline:
                     task = self.library.next_job(transcript_folder(self.root),allow_auto=allowed)
                     if task:
                         key, job = task
+                        self.active_job=key
                         self.runtime()  # missing setup does not poison every queue item
                         self.library.update(key, status='running', attempts=job['attempts']+1)
                         self.asr_status = f'准备转写：{Path(job["receipt"]["path"]).name}'
@@ -542,6 +612,31 @@ class AutoPipeline:
                             self._close_process()
                             raise
                         continue
+                    self.active_job=None
+                    if settings.get('ollama_enabled',False):
+                        with self.library.lock:
+                            post=next(((k,json.loads(json.dumps(j))) for k,j in self.library.data['jobs'].items()
+                                if j['status']=='complete' and j.get('enrichment_state') in ('pending','running','failed')
+                                and j.get('enrichment_retry_at',0)<=time.time()
+                                and (allowed or j.get('manual') or j.get('run_immediately'))),None)
+                        if post:
+                            key,job=post
+                            self.active_job=key
+                            self._close_process()  # ASR and Ollama take turns using GPU memory.
+                            self.library.update(key,enrichment_state='running')
+                            try:
+                                def progress(label,percent):
+                                    self.post_status=label;self.transcribe_progress=percent
+                                result=enrich(job['output'],settings,progress,EnrichmentControl(self,key))
+                                self.library.update(key,enrichment_state=result.pop('state'),**result,enrichment_error='')
+                            except InterruptedError:
+                                self.library.update(key,enrichment_state='pending')
+                            except Exception as error:
+                                self.library.update(key,enrichment_state='failed',enrichment_error=str(error),enrichment_retry_at=time.time()+300)
+                                self.message('转写已保存；纪要稍后重试：'+str(error))
+                            finally:
+                                self.post_status='';self.active_job=None
+                            continue
                     if self.process and time.monotonic()-self.last_asr_use > 60:
                         self._close_process()  # release GPU when the queue is empty
                     if not settings.get('auto_transcribe', False):
@@ -563,5 +658,7 @@ class AutoPipeline:
             'sync_status':self.sync_status, 'asr_status':self.asr_status, 'last_error':self.last_error,
             'download_progress':self.download_progress, 'transcribe_progress':self.transcribe_progress,
             'immediate_download_pending':bool(self.immediate_identity),
+            'device_pending':self.device_pending,'device_checked_at':self.device_checked_at,
+            'post_status':self.post_status,'active_job':self.active_job,
             'counts':self.library.counts(), 'transcript_dir':str(transcript_folder(self.root)),
             'worker_running':bool(self.worker and self.worker.is_alive())}

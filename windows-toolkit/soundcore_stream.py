@@ -248,6 +248,7 @@ class Receiver:
 
     async def run(self, seconds=30, start=False, wait_for_recording=False):
         identity = known_identity()
+        self.identity_hex=identity.hex()
         def matches(device, adv):
             from recorder_files import candidate_from
             candidate = candidate_from(device, adv)

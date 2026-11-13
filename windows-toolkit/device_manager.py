@@ -21,7 +21,7 @@ class DeviceManager:
         self.resume_after = app.service.enabled.is_set() or not load_selection(data_root)
         app.service.command('pause')
         self.window = tk.Toplevel(app.root)
-        self.window.title('录音管理 · soundcore Work')
+        self.window.title('设备录音管理' if tab=='files_only' else '录音管理 · soundcore Work')
         self.window.geometry('900x720')
         self.window.minsize(840, 680)
         self.window.protocol('WM_DELETE_WINDOW', self.close)
@@ -40,7 +40,7 @@ class DeviceManager:
         self.selected = tk.StringVar()
         self.progress = tk.DoubleVar(value=0)
         outer = ttk.Frame(self.window, padding=18); outer.pack(fill='both', expand=True)
-        ttk.Label(outer, text='选择录音豆与导出录音', font=('Microsoft YaHei UI', 17, 'bold')).pack(anchor='w')
+        ttk.Label(outer, text='设备录音管理' if tab=='files_only' else '选择录音豆与导出录音', font=('Microsoft YaHei UI', 17, 'bold')).pack(anchor='w')
         ttk.Label(outer, textvariable=self.selected).pack(anchor='w', pady=(8, 12))
         tabs = self.tabs = ttk.Notebook(outer); tabs.pack(fill='both', expand=True)
         devices = ttk.Frame(tabs, padding=12); tabs.add(devices, text='选择录音豆')
@@ -69,29 +69,42 @@ class DeviceManager:
         self.export_button = ttk.Button(actions, text='下载所选', command=self.export_files); self.export_button.pack(side='left', padx=8)
         self.all_button = ttk.Button(actions, text='一键全部下载', command=lambda:self.export_files(all_files=True)); self.all_button.pack(side='left')
         self.delete_button = ttk.Button(actions, text='删除所选…', command=self.delete_files); self.delete_button.pack(side='left', padx=8)
+        if tab=='files_only':
+            ttk.Button(actions,text='下载并删除所选',command=self.download_delete).pack(side='left')
         options = ttk.Frame(files); options.pack(fill='x', pady=(10, 0))
         self.delete_check = ttk.Checkbutton(options, text='下载后删除（完整下载并校验成功后逐条删除设备原件）', variable=self.delete_after)
         self.delete_check.pack(anchor='w')
+        if tab=='files_only':options.pack_forget()
         location = ttk.Frame(outer); location.pack(fill='x', pady=(12, 0))
         ttk.Label(location, text='固定下载目录：').pack(anchor='w')
         ttk.Label(location, textvariable=self.folder_label, wraplength=820).pack(anchor='w')
         folder_actions = ttk.Frame(location); folder_actions.pack(fill='x', pady=(6, 0))
         self.folder_button = ttk.Button(folder_actions, text='更改目录…', command=self.change_folder); self.folder_button.pack(side='left')
+        if tab=='files_only':self.folder_button.pack_forget()
         ttk.Button(folder_actions, text='打开下载目录', command=self.open_output).pack(side='left', padx=8)
         ttk.Progressbar(outer, variable=self.progress, maximum=100).pack(fill='x', pady=(14, 6))
         ttk.Label(outer, textvariable=self.status, wraplength=790, justify='left').pack(anchor='w')
         bottom = ttk.Frame(outer); bottom.pack(fill='x', pady=(12, 0))
         self.cancel_button = ttk.Button(bottom, text='取消当前操作', command=self.cancel, state='disabled'); self.cancel_button.pack(side='left')
-        ttk.Button(bottom, text='关闭并返回麦克风', command=self.close).pack(side='right')
+        ttk.Button(bottom, text='关闭', command=self.close).pack(side='right')
         self.refresh_selected()
         self.render_devices()
         self.window.after(100, self.poll)
-        if tab == 'files':
+        if tab in ('files','files_only'):
+            if tab=='files_only':tabs.hide(devices)
             if load_selection(data_root):
                 tabs.select(files)
                 self.window.after(250, self.list_files)
         if not load_selection(data_root):
-            self.window.after(250, self.scan_devices)
+            if tab!='files_only':self.window.after(250, self.scan_devices)
+            else:self.status.set('请先从托盘“连接录音豆”选择设备。')
+
+    def download_delete(self):
+        if self.busy:return
+        previous=self.delete_after.get()
+        self.delete_after.set(True)
+        try:self.export_files()
+        finally:self.delete_after.set(previous)
 
     def refresh_selected(self):
         selected = load_selection(self.data_root)
@@ -196,7 +209,7 @@ class DeviceManager:
     def identity(self):
         selected = load_selection(self.data_root)
         if not selected:
-            self.status.set('请先在“选择录音豆”页扫描并记住自己的设备。')
+            self.status.set('请先从托盘“连接录音豆”选择设备。')
             return None
         return selected['identity_hex']
 

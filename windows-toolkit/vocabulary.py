@@ -21,9 +21,9 @@ def parse_terms(text):
 
 
 class VocabularyStore:
-    def __init__(self, root):
+    def __init__(self, root, path=None):
         self.folder = Path(read_settings(root).get('vocabulary_dir') or Path(root)/'词库')
-        self.path = self.folder/'通用词库.json'
+        self.path = Path(path) if path else self.folder/'通用词库.json'
         self.lock = threading.RLock()
         if self.path.exists():
             self.data = json.loads(self.path.read_text(encoding='utf-8'))
@@ -39,7 +39,7 @@ class VocabularyStore:
         self.data['audit'].append({'at':now(), 'action':action, 'before':before,
                                    'revision':self.data['revision']})
         write_json(self.path, self.data)
-        self.export(self.folder/'通用词库.txt')
+        self.export(self.path.with_suffix('.txt'))
 
     def add(self, terms, source, state='accepted', context=''):
         if state not in ('accepted','pending'): raise ValueError('无效词条状态')
@@ -57,7 +57,7 @@ class VocabularyStore:
             return added
 
     def review(self, ids, state, edited_term=None):
-        if state not in ('accepted','ignored','disabled','pending'): raise ValueError('无效审核状态')
+        if state not in ('accepted','ignored','disabled','pending','deleted'): raise ValueError('无效审核状态')
         with self.lock:
             before=copy.deepcopy(self.data['terms'])
             if edited_term is not None:
@@ -84,13 +84,62 @@ class VocabularyStore:
         path=Path(path); path.parent.mkdir(parents=True,exist_ok=True)
         path.write_text('\n'.join(r['term'] for r in self.rows('accepted'))+'\n',encoding='utf-8')
 
-    def snapshot(self, special=()):
+    def snapshot(self, special=(), include_general=True):
         with self.lock:
             data={'general_revision':self.data['revision'],
-                  'general':[r['term'] for r in self.rows('accepted')],
+                  'general':[r['term'] for r in self.rows('accepted')] if include_general else [],
                   'special':parse_terms('\n'.join(special)), 'created_at':now()}
             data['sha256']=hashlib.sha256(json.dumps({k:data[k] for k in ('general_revision','general','special')},
                 sort_keys=True,ensure_ascii=False).encode()).hexdigest()
             target=self.folder/'快照'/(data['sha256']+'.json')
             if not target.exists(): write_json(target,data)
             return data
+
+
+class ProjectVocabularies:
+    """Named project dictionaries; disabled/deleted entries remain recoverable."""
+    def __init__(self, root):
+        self.root=Path(root)
+        self.folder=VocabularyStore(root).folder/'专用'
+        self.path=self.folder/'项目词库.json'
+        self.lock=threading.RLock()
+        self.data=json.loads(self.path.read_text(encoding='utf-8')) if self.path.exists() else {'projects':[],'migrated':[]}
+
+    def rows(self):
+        with self.lock: return copy.deepcopy(self.data['projects'])
+
+    def add(self,name):
+        name=name.strip()
+        if not name: raise ValueError('请输入项目名')
+        with self.lock:
+            if any(p['name']==name and p['state']!='deleted' for p in self.data['projects']):
+                raise ValueError('项目名已存在')
+            item={'id':uuid.uuid4().hex,'name':name,'state':'accepted','created_at':now()}
+            self.data['projects'].append(item); write_json(self.path,self.data)
+            return item['id']
+
+    def update(self,key,**changes):
+        if 'state' in changes and changes['state'] not in ('accepted','disabled','deleted'):raise ValueError('无效状态')
+        with self.lock:
+            if 'name' in changes:
+                changes['name']=changes['name'].strip()
+                if not changes['name'] or any(p['id']!=key and p['name']==changes['name'] and p['state']!='deleted' for p in self.data['projects']):
+                    raise ValueError('项目名为空或重复')
+            row=next(p for p in self.data['projects'] if p['id']==key)
+            row.update(changes); write_json(self.path,self.data)
+
+    def store(self,key):
+        if not any(p['id']==key for p in self.rows()):raise ValueError('项目不存在')
+        return VocabularyStore(self.root,self.folder/(key+'.json'))
+
+    def terms(self,key):
+        row=next(p for p in self.rows() if p['id']==key)
+        if row['state']!='accepted':raise ValueError('该项目词库已停用或删除')
+        return [r['term'] for r in self.store(key).rows('accepted')]
+
+    def migrate_text_files(self):
+        for path in self.folder.glob('*专用词库.txt'):
+            if path.name in self.data['migrated']:continue
+            key=self.add(path.stem.removesuffix('-专用词库'))
+            self.store(key).add(parse_terms(path.read_text(encoding='utf-8-sig')),str(path))
+            self.data['migrated'].append(path.name);write_json(self.path,self.data)

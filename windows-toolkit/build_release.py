@@ -16,6 +16,8 @@ from guide_text import GUIDE
 PROJECT = Path(__file__).resolve().parent
 REPOSITORY = PROJECT.parent
 SOURCE_FILES = (
+    'tray_app.py','ui_common.py','workflow_panels.py','settings_panel.py','self_service_panel.py',
+    'dictionary_panel.py','ollama_summary.py','test_workflows.py',
     'soundcore_microphone.py', 'soundcore_stream.py', 'recorder_files.py',
     'device_manager.py', 'bridge_setup.py', 'guide_text.py', 'files_cli.py',
     'microphone-requirements.txt', 'requirements-build.txt', 'VERSION',

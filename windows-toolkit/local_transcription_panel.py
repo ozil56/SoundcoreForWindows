@@ -12,7 +12,7 @@ AUDIO_TYPES = [('音频（WAV / MP3 / FLAC / OGG）', '*.wav *.mp3 *.flac *.ogg'
 SUPPORTED_SUFFIXES = {'.wav', '.mp3', '.flac', '.ogg'}
 
 
-def submit_local_batch(pipeline, sources, folder, snapshot, project, report):
+def submit_local_batch(pipeline, sources, folder, snapshot, project, report, submitted=None):
     """Copy/verify before submitting. Each file succeeds or fails independently."""
     successful = []
     errors = []
@@ -30,7 +30,8 @@ def submit_local_batch(pipeline, sources, folder, snapshot, project, report):
             # Keep project selection and job creation together against other panels.
             with pipeline.library.lock:
                 pipeline.library.edit_record([record_id], project=project)
-                pipeline.library.queue_manual(record_id, snapshot, kind='local', reuse_pending=True)
+                key=pipeline.library.queue_manual(record_id, snapshot, kind='local', reuse_pending=True)
+                if submitted:submitted(key)
             pipeline.wake_event.set()
             successful.append(str(source))
         except Exception as error:
