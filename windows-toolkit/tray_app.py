@@ -24,7 +24,7 @@ from self_service_panel import SelfServicePanel
 from dictionary_panel import DictionaryPanel
 from tool_settings import diagnostics_folder
 
-VERSION='2.5.0'
+VERSION='2.5.1'
 MENU_ITEMS=(('连接录音豆','devices'),('设备录音管理','files'),('自动转写','sync'),
             ('自助转写','transcribe'),('词库管理','vocabulary'),('设置','settings'),('退出','quit'))
 

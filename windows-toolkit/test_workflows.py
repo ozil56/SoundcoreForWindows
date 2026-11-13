@@ -10,7 +10,7 @@ from unittest.mock import Mock,patch
 from asr_worker import adaptive_decode,OutputLimit,repeating_tokens
 from auto_sync import AutoPipeline,EnrichmentControl
 from vocabulary import ProjectVocabularies,VocabularyStore
-from ollama_summary import enrich,safe_title
+from ollama_summary import enrich,safe_title,render_minutes
 from tool_settings import update_settings,write_json,read_settings
 from test_auto_sync import make_receipt
 from workflow_panels import automatic_summary
@@ -90,7 +90,20 @@ class WorkflowTests(unittest.TestCase):
             self.assertEqual(again['minutes_output'],result['minutes_output'])
             self.assertNotIn('/',Path(result['named_output']).name)
             minutes=Path(result['minutes_output']).read_text(encoding='utf-8-sig')
-            for title in ('标题','主要内容','待办事项','具体完整内容的润色'):self.assertIn(title,minutes)
+            self.assertEqual(Path(result['minutes_output']).suffix,'.md')
+            self.assertTrue(minutes.startswith('# '+result['title']+'\n\n'))
+            self.assertEqual(Path(result['named_output']).suffix,'.txt')
+            for title in ('主要内容','待办事项','具体完整内容的润色'):self.assertIn('\n\n## '+title+'\n\n',minutes)
+            self.assertTrue(Path(result['minutes_output']+'.json').is_file())
+
+    def test_markdown_minutes_keep_details_and_format_lists(self):
+        text=render_minutes('项目审查','1. 保留 3.5 米净宽；2、下一阶段复核\n- 已确认方案',
+            '周五提交材料；负责人待确认',['正文第一段：宽度 3.5 米。','正文第二段保持原文。'])
+        self.assertIn('- 保留 3.5 米净宽\n- 下一阶段复核\n- 已确认方案',text)
+        self.assertIn('## 待办事项\n\n- 周五提交材料\n- 负责人待确认',text)
+        self.assertIn('正文第一段：宽度 3.5 米。\n\n正文第二段保持原文。',text)
+        empty=render_minutes('测试','内容','无明确待办事项。',['正文'])
+        self.assertIn('## 待办事项\n\n无明确待办事项。',empty)
 
     def test_failed_minutes_keep_transcript_and_checkpoint(self):
         with tempfile.TemporaryDirectory() as folder:

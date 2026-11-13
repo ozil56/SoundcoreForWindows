@@ -64,7 +64,7 @@ class SettingsPanel(Panel):
         self.minimum=tk.StringVar(value=str(float(settings.get('ollama_min_seconds',120))/60))
         ttk.Spinbox(row,from_=0,to=120,increment=.5,textvariable=self.minimum,width=8).pack(side='left',padx=8)
         ttk.Label(row,text='分钟后才生成标题和纪要').pack(side='left')
-        ttk.Label(ollama,text='短录音直接保存转写；有效文字很少时也跳过。原始转写始终保留。\n纪要包含：标题、主要内容、待办事项、完整正文润色。\n标题文件名：20261111-152313-会议标题.txt；纪要另存为“会议标题-纪要.txt”。\n启用后，转写文字会发送到你配置的 Ollama 服务器。',wraplength=735).pack(anchor='w',pady=10)
+        ttk.Label(ollama,text='短录音直接保存转写；有效文字很少时也跳过。原始转写始终保留。\n纪要包含：标题、主要内容、待办事项、完整正文润色。\n转写保存为 TXT；纪要保存为 Markdown（.md），含标题、分节和列表。\n文件名：20261111-152313-会议标题-纪要.md。\n启用后，转写文字会发送到你配置的 Ollama 服务器。',wraplength=735).pack(anchor='w',pady=10)
         ttk.Button(ollama,text='测试连接与模型',command=self.test_connection).pack(anchor='w')
         self.status=tk.StringVar(value='设置保存后生效。')
         ttk.Label(self.body,textvariable=self.status,wraplength=790).pack(anchor='w',pady=12)
