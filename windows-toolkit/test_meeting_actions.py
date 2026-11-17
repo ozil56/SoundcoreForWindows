@@ -24,11 +24,13 @@ class MeetingActionTests(unittest.TestCase):
 
     def test_checkpoint_reuse_and_incomplete_merge_never_drop_tasks(self):
         state={};save=Mock();second=self.item();second['task']='复核方案工程量'
-        chat=Mock(side_effect=[{'items':[self.item(),second]},{'groups':[[0]]}])
+        reviews=[dict(id=i,verdict='明确安排',task=item['task'],details=item['details'],
+                      deliverable=item['deliverable'],reason='原文明示安排') for i,item in enumerate((self.item(),second))]
+        chat=Mock(side_effect=[{'items':[self.item(),second]},{'groups':[[0]]},{'reviews':reviews}])
         first=extract_actions(self.segments,{},state,chat,save,lambda:None,lambda *_:None,OllamaOutputLimit)
         self.assertEqual(len(first),2)
         again=extract_actions(self.segments,{},state,chat,save,lambda:None,lambda *_:None,OllamaOutputLimit)
-        self.assertEqual(first,again);self.assertEqual(chat.call_count,2)
+        self.assertEqual(first,again);self.assertEqual(chat.call_count,3)
         rendered=render_actions(first)
         for detail in ('小王','周五前','对比表','测量资料到齐','00:01:05–00:01:28','原文依据'):
             self.assertIn(detail,rendered)

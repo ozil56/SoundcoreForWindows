@@ -24,7 +24,7 @@ from self_service_panel import SelfServicePanel
 from dictionary_panel import DictionaryPanel
 from tool_settings import diagnostics_folder
 
-VERSION='2.5.2'
+VERSION='2.5.5'
 MENU_ITEMS=(('连接录音豆','devices'),('设备录音管理','files'),('自动转写','sync'),
             ('自助转写','transcribe'),('词库管理','vocabulary'),('设置','settings'),('退出','quit'))
 
@@ -97,7 +97,7 @@ class TrayApp:
         if command=='sync-now':self.sync_device_now();return
         if command=='local-now':self.pipeline.request_local_transcription();self.show_sync_panel();return
         if command=='quit':
-            self.closing=True;self.quit_deadline=time.monotonic()+50
+            self.closing=True;self.quit_deadline=time.monotonic()+150
             for name in ('connection_panel','manager','automatic_panel','transcription_panel','vocabulary_panel','settings_panel'):
                 panel=getattr(self,name)
                 if panel:panel.close()

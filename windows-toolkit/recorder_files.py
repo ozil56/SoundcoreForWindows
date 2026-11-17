@@ -221,14 +221,70 @@ class WavExport:
 class RecorderSession(protocol.Receiver):
     @classmethod
     def attached(cls, receiver, identity):
-        """Borrow the live connection on the same event loop; never disconnect it."""
+        """Borrow the live connection; Wi-Fi handoff restores this same owner."""
         session = cls.__new__(cls)
         session.client, session.queue = receiver.client, receiver.queue
+        session.receiver = receiver
+        session.report = receiver.report
+        session.info = {}
         session.identity = bytes.fromhex(identity)
         session.session_key = receiver.session_key
         generation = receiver.recording_generation
         session.recording_guard = lambda: receiver.recording_active or receiver.recording_generation != generation
         return session
+
+    def is_recording(self):
+        return getattr(self, 'receiver', self).recording_active
+
+    async def restore_after_wifi(self):
+        """Replace the WinRT client; reusing it can retain stale GATT services."""
+        owner = getattr(self, 'receiver', self)
+        device = getattr(owner, 'ble_device', None)
+        def matches(found, adv):
+            candidate = candidate_from(found, adv)
+            return candidate is not None and candidate.identity_hex == self.identity.hex()
+        async with asyncio.timeout(45):
+            if self.client.is_connected:
+                await self.client.disconnect()
+            for attempt in range(2):
+                if attempt or device is None:
+                    device = await BleakScanner.find_device_by_filter(matches, timeout=8) or device
+                if device is None:
+                    raise ConnectionError('热点传输后暂未发现录音豆蓝牙广播')
+                # The recorder's GATT layout is unchanged by the Wi-Fi handoff.
+                client = BleakClient(device, timeout=12, pair=False, winrt={'use_cached_services':True})
+                self.client = owner.client = client
+                owner.ble_device = device
+                try:
+                    await client.connect()
+                    if not client.services.get_characteristic(protocol.NOTIFY):
+                        raise ConnectionError('恢复蓝牙时未取得通知服务')
+                    protocol.DEVICE_CACHE[self.identity.hex()] = device
+                    owner.buffer.clear()
+                    while not self.queue.empty():
+                        self.queue.get_nowait()
+                    await client.start_notify(protocol.NOTIFY, owner.notify)
+                    await self.send(0x1A, 2)
+                    check_status(await self.receive(0x1A, 2, timeout=5))
+                    packet = await self.request(1, 1)
+                    check_status(packet)
+                    body = packet[9:-1]
+                    if len(body) < 51:
+                        raise ValueError('恢复蓝牙时设备信息不完整')
+                    self.info = {'firmware':body[3:8].decode('ascii', errors='replace'), 'recording':body[50] == 1}
+                    await self.handshake()
+                    owner.session_key = self.session_key
+                    return
+                except BaseException as error:
+                    try:
+                        async with asyncio.timeout(3):
+                            await client.disconnect()
+                    except Exception:
+                        pass
+                    if not isinstance(error, Exception) or attempt:
+                        raise
+                    protocol.log(f'BLE restore retry: {type(error).__name__}: {error}')
+                    await asyncio.sleep(1)
 
     def check_idle(self):
         if getattr(self, 'transfer_guard', None):
@@ -252,13 +308,17 @@ class RecorderSession(protocol.Receiver):
             def matches(device, adv):
                 candidate = candidate_from(device, adv)
                 return candidate is not None and candidate.identity_hex == self.identity.hex()
-            device = await BleakScanner.find_device_by_filter(matches, timeout=20)
+            device = protocol.DEVICE_CACHE.pop(self.identity.hex(), None)
+            if device is None:
+                device = await BleakScanner.find_device_by_filter(matches, timeout=20)
             if not device:
                 raise RuntimeError('未找到所选录音豆。请唤醒设备，并暂停其他电脑桥接、断开手机 App 的连接。')
-            self.client = BleakClient(device, timeout=20, pair=False)
+            self.ble_device = device
+            self.client = BleakClient(device, timeout=20, pair=False, winrt={'use_cached_services':True})
             await self.client.connect()
             if not self.client.services.get_characteristic(protocol.WRITE) or not self.client.services.get_characteristic(protocol.NOTIFY):
                 raise RuntimeError('所选设备不支持 D3200 读写特征')
+            protocol.DEVICE_CACHE[self.identity.hex()] = device
             await self.client.start_notify(protocol.NOTIFY, self.notify)
             packet = await self.request(1, 1)
             check_status(packet)

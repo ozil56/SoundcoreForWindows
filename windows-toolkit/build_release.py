@@ -18,6 +18,9 @@ REPOSITORY = PROJECT.parent
 SOURCE_FILES = (
     'tray_app.py','ui_common.py','workflow_panels.py','settings_panel.py','self_service_panel.py',
     'dictionary_panel.py','vocabulary_guide.py','ollama_summary.py','meeting_actions.py','test_workflows.py','test_meeting_actions.py',
+    'test_minutes_validation.py','test_asr_batch.py','test_hotword_rules.py',
+    'windows_wifi.py','wifi_transfer.py','transfer_batch.py','wifi_cli.py','wifi-requirements.txt',
+    'test_wifi_transfer.py','test_transfer_batch.py',
     'soundcore_microphone.py', 'soundcore_stream.py', 'recorder_files.py',
     'device_manager.py', 'bridge_setup.py', 'guide_text.py', 'files_cli.py',
     'microphone-requirements.txt', 'requirements-build.txt', 'VERSION',
@@ -118,6 +121,7 @@ def build():
         'version':version,'git_revision':revision,'tracked_changes_at_build':changed,
         'python':platform.python_version(),'platform':'windows-x64','packages':versions,
         'source_directory':'windows-toolkit','virtual_audio_driver_included':False,
+        'source_sha256':{filename:sha256(PROJECT/filename) for filename in SOURCE_FILES},
     },ensure_ascii=False,indent=2),encoding='utf-8')
     validate_public_files(stage)
     paths = sorted(path for path in stage.rglob('*') if path.is_file())

@@ -9,7 +9,9 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 
 from recorder_files import (Candidate, RecorderSession, load_selection, save_selection, scan,
-                            download_folder, set_download_folder, download_one)
+                            download_folder, set_download_folder, download_one, verify_download)
+from tool_settings import read_settings, write_json
+from transfer_batch import DownloadBatch
 
 
 class DeviceManager:
@@ -250,16 +252,24 @@ class DeviceManager:
                     if any(item.active for item in latest):
                         raise ValueError('录音豆仍在录音。请弹起侧键停止录音并刷新列表，再下载历史录音。')
                     chosen = latest if all_files else selected
-                    for index, recording in enumerate(chosen):
-                        last_update = [0.0]
-                        def progress(received, expected):
-                            if time.monotonic()-last_update[0] > .25:
-                                last_update[0] = time.monotonic()
-                                self.events.put(('progress', (index, len(chosen), received, expected)))
-                        result = await download_one(session, recording, output_folder, delete_after, progress)
-                        completed.append(result)
-                        self.events.put(('saved', result))
+                    notice = lambda text: self.events.put(('notice', text))
+                    async with DownloadBatch(session, self.data_root, read_settings(self.data_root), notice) as batch:
+                        for index, recording in enumerate(chosen):
+                            last_update = [0.0]
+                            def progress(received, expected):
+                                if time.monotonic()-last_update[0] > .25:
+                                    last_update[0] = time.monotonic()
+                                    self.events.put(('progress', (index, len(chosen), received, expected)))
+                            result = await download_one(batch, recording, output_folder, False, progress)
+                            completed.append(result)
+                            self.events.put(('saved', result))
                     if delete_after:
+                        # BLE control resumes only after the batch closes its hotspot.
+                        for result in completed:
+                            verify_download(result)
+                            await session.delete(result['file_id'])
+                            result['deleted_from_device'] = True
+                            write_json(Path(result['path']).with_suffix('.wav.json'), result)
                         self.events.put(('updated_files', (await session.list_files(), session.info)))
             finally:
                 self.events.put(('batch_count', len(completed)))
@@ -298,7 +308,7 @@ class DeviceManager:
                 loop.call_soon_threadsafe(task.cancel)
             except RuntimeError:
                 pass
-        self.status.set('正在取消并释放蓝牙连接；此前已完成的文件会保留。')
+        self.status.set('正在取消、关闭热点并恢复连接；此前已完成的文件会保留。')
 
     def open_output(self):
         self.output_folder.mkdir(parents=True, exist_ok=True)

@@ -5,6 +5,7 @@ import hashlib
 import json
 from pathlib import Path
 import threading
+import unicodedata
 import uuid
 from tool_settings import read_settings, write_json
 
@@ -14,7 +15,11 @@ def now():
 
 
 def parse_terms(text):
-    terms = list(dict.fromkeys(line.strip() for line in text.lstrip('\ufeff').splitlines() if line.strip()))
+    terms=[];seen=set()
+    for line in text.splitlines():
+        term=unicodedata.normalize('NFKC',line).strip().lstrip('\ufeff').strip()
+        key=term.casefold()
+        if key and key not in seen:terms.append(term);seen.add(key)
     if any(len(term) > 160 or any(ord(c) < 32 for c in term) for term in terms):
         raise ValueError('每行一个词或短语，最长 160 字；请去掉制表符、编号和说明。')
     return terms

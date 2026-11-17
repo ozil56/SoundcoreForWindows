@@ -1,0 +1,2 @@
+# Install alongside microphone-requirements.txt for the source-only Wi-Fi tool.
+websocket-client>=1.9.2,<2

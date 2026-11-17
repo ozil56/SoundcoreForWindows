@@ -22,12 +22,17 @@ class SettingsPanel(Panel):
         plan=ttk.Frame(tabs,padding=18);tabs.add(plan,text='自动处理与启动')
         ollama=ttk.Frame(tabs,padding=18);tabs.add(ollama,text='Ollama 标题与纪要')
         decoding=ttk.Frame(tabs,padding=18);tabs.add(decoding,text='识别参数')
-        for key,label,default,low,high,step in [('asr_chunk_seconds','每段音频最长（秒）',60,15,180,15),
+        transfer=ttk.Frame(tabs,padding=18);tabs.add(transfer,text='录音传输')
+        fast=tk.BooleanVar(value=settings.get('wifi_fast_transfer',True));self.values['wifi_fast_transfer']=fast
+        ttk.Checkbutton(transfer,text='优先使用 Wi-Fi 快传（手动下载和自动下载）',variable=fast).pack(anchor='w',pady=8)
+        ttk.Label(transfer,text='下载时让录音豆临时开启热点，电脑自动连接；同一批录音共用一次热点。\n完成或取消后关闭热点，并恢复之前的 Wi-Fi 与蓝牙连接。\n电量不足 30%、无线网卡不可用或快传失败时，自动改用蓝牙下载。\n\n如果电脑只通过 Wi-Fi 上网，快传期间网络会暂时中断，完成后恢复。\n关闭本选项后始终使用蓝牙；录音中的实时麦克风仍通过蓝牙工作。',wraplength=730).pack(anchor='w',pady=16)
+        for key,label,default,low,high,step in [('asr_chunk_seconds','每段音频最长（秒）',60,15,60,15),
+                ('asr_batch_size','同一录音每批段数（1 或 2）',2,1,2,1),
                 ('asr_max_new_tokens','单段输出上限（tokens）',4096,512,8192,512)]:
             ttk.Label(decoding,text=label).pack(anchor='w',pady=(14,5))
             value=tk.StringVar(value=str(settings.get(key,default)));self.values[key]=value
             ttk.Spinbox(decoding,from_=low,to=high,increment=step,textvariable=value,width=16).pack(anchor='w')
-        ttk.Label(decoding,text='按停顿组织语音段，实际长度通常小于上限。长段可保留更多上下文；\n输出上限只限制最长生成，不会强制生成这么多文字。\n重复输出会提前检测，问题片段自动细分重试，不接受截断结果。\n已有未完成任务保留其分段进度；新任务使用新的分段设置。',wraplength=730).pack(anchor='w',pady=24)
+        ttk.Label(decoding,text='按停顿组织语音段，最长 60 秒；单模型每批最多两段，任务按队列处理。\n显存不足、重复或截断时单段重试，必要时细分；失败保留已完成进度。\n修改识别参数会归档不兼容断点，未完成任务重新识别；已完成结果保留。',wraplength=730).pack(anchor='w',pady=24)
         def field(parent,key,label,default,file=False):
             value=tk.StringVar(value=settings.get(key,default));self.values[key]=value
             ttk.Label(parent,text=label).pack(anchor='w',pady=(6,2))
@@ -64,6 +69,10 @@ class SettingsPanel(Panel):
         self.minimum=tk.StringVar(value=str(float(settings.get('ollama_min_seconds',120))/60))
         ttk.Spinbox(row,from_=0,to=120,increment=.5,textvariable=self.minimum,width=8).pack(side='left',padx=8)
         ttk.Label(row,text='分钟后才生成标题和纪要').pack(side='left')
+        row=ttk.Frame(ollama);row.pack(fill='x',pady=4)
+        ttk.Label(row,text='上下文长度（0 为自动 8192 / 16384）').pack(side='left')
+        context=tk.StringVar(value=str(settings.get('ollama_num_ctx',0)));self.values['ollama_num_ctx']=context
+        ttk.Entry(row,textvariable=context,width=10).pack(side='left',padx=8)
         ttk.Label(ollama,text='短录音直接保存转写；有效文字很少时也跳过。原始转写始终保留。\n纪要包含：标题、主要内容、待办事项、完整正文润色。\n转写保存为 TXT；纪要保存为 Markdown（.md），含标题、分节和列表。\n文件名：20261111-152313-会议标题-纪要.md。\n启用后，转写文字会发送到你配置的 Ollama 服务器。',wraplength=735).pack(anchor='w',pady=10)
         ttk.Button(ollama,text='测试连接与模型',command=self.test_connection).pack(anchor='w')
         self.status=tk.StringVar(value='设置保存后生效。')
@@ -99,8 +108,13 @@ class SettingsPanel(Panel):
             values['ollama_min_seconds']=float(self.minimum.get())*60
             values['asr_chunk_seconds']=int(values['asr_chunk_seconds'])
             values['asr_max_new_tokens']=int(values['asr_max_new_tokens'])
-            if not 15<=values['asr_chunk_seconds']<=180 or not 512<=values['asr_max_new_tokens']<=8192:
-                raise ValueError('音频段长应为 15–180 秒；输出上限应为 512–8192 tokens')
+            values['asr_batch_size']=int(values['asr_batch_size'])
+            values['ollama_num_ctx']=int(values['ollama_num_ctx'])
+            if values['asr_batch_size'] not in (1,2):raise ValueError('每批段数应为 1 或 2')
+            if values['ollama_num_ctx']!=0 and not 4096<=values['ollama_num_ctx']<=32768:
+                raise ValueError('上下文长度应为 0（自动）或 4096–32768；请按显存容量设置')
+            if not 15<=values['asr_chunk_seconds']<=60 or not 512<=values['asr_max_new_tokens']<=8192:
+                raise ValueError('音频段长应为 15–60 秒；输出上限应为 512–8192 tokens')
             if not 0<=values['ollama_min_seconds']<=7200:raise ValueError('时长阈值应为 0–120 分钟')
             if not values['ollama_model']:raise ValueError('请输入 Ollama 模型名')
             for key in ('download_dir','import_dir','transcript_dir','vocabulary_dir'):

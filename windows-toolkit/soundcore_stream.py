@@ -27,6 +27,10 @@ ROOT = Path(__file__).resolve().parent
 SERVICE = '020cf5da-0000-1000-8000-00805f9b34fb'
 WRITE = '00007777-0000-1000-8000-00805f9b34fb'
 NOTIFY = '00008888-0000-1000-8000-00805f9b34fb'
+# Only devices already identified by their manufacturer identity are cached.
+# WinRT can keep the physical link alive briefly after disconnect, during which
+# the recorder does not advertise; connecting its known address still works.
+DEVICE_CACHE = {}
 
 
 def log(message):
@@ -254,13 +258,17 @@ class Receiver:
             candidate = candidate_from(device, adv)
             return candidate is not None and candidate.identity_hex == identity.hex()
         log('Scanning for the selected recorder...')
-        device = await BleakScanner.find_device_by_filter(matches, timeout=20)
+        device = DEVICE_CACHE.pop(identity.hex(), None)
+        if device is None:
+            device = await BleakScanner.find_device_by_filter(matches, timeout=20)
         if not device:
             raise RuntimeError('Recorder not advertising; release phone connection and wake recorder')
         log('Recorder found; connecting...')
         self.phase = 'connecting'
-        self.client = BleakClient(device, timeout=20, pair=False)
+        self.ble_device = device
+        self.client = BleakClient(device, timeout=20, pair=False, winrt={'use_cached_services':True})
         async with self.client:
+            DEVICE_CACHE[identity.hex()] = device
             await self.client.start_notify(NOTIFY, self.notify)
             info = await self.request(1, 1)
             body = info[9:-1]
@@ -339,6 +347,13 @@ class Receiver:
                                 await self.send(0x18,0x82,b'\x02')
                     except Exception:
                         pass
+                # A Wi-Fi batch may have replaced the original context-manager
+                # client with a fresh WinRT client. Close the current owner too.
+                try:
+                    async with asyncio.timeout(12):
+                        await self.client.disconnect()
+                except Exception:
+                    pass
                 self.phase = 'disconnected'
 
     def close(self):

@@ -22,6 +22,7 @@ from vocabulary import VocabularyStore,ProjectVocabularies
 from tool_settings import diagnostics_folder, cache_folder
 from asr_process import start_worker
 from ollama_summary import enrich
+from transfer_batch import DownloadBatch
 
 
 class SyncDeferred(Exception):
@@ -330,6 +331,8 @@ class AutoPipeline:
         guard_checked = 0
         def transfer_guard():
             nonlocal guard_checked
+            if self.stop_event.is_set():
+                raise asyncio.CancelledError()
             now = time.monotonic()
             if now-guard_checked < .5:
                 return
@@ -351,15 +354,14 @@ class AutoPipeline:
                 self.idle_since = None
                 self.sync_status = '录音中，后台下载等待'
                 return
-            chosen = None
+            pending = []
             for recording in sorted(files, key=lambda f:f.file_id):
                 receipt = await asyncio.to_thread(self.library.verified_receipt, selection['identity_hex'], recording)
                 if receipt is None:
-                    chosen = recording
-                    break
-                if read_settings(self.root).get('auto_delete', False):
+                    pending.append(recording)
+                elif read_settings(self.root).get('auto_delete', False):
                     await self.delete_saved(session, receipt)
-            if chosen is None:
+            if not pending:
                 if immediate:
                     self.library.request_device_transcription(selection['identity_hex'])
                     with self.immediate_lock:
@@ -370,25 +372,35 @@ class AutoPipeline:
                 else:
                     self.sync_status = '设备录音已同步，等待新录音'
                 return
-            self.current_file = chosen.title
-            self.sync_status = f'{"立即下载" if immediate else "自动下载"}：{chosen.title}'
             self.download_progress = 0
             receiver.phase = 'syncing'
-            def progress(done, total):
-                self.download_progress = min(99, 100*done/max(1,total))
-            result = await download_one(session, chosen, download_folder(self.root), False, progress)
-            await asyncio.to_thread(self.library.register, result)
-            self.device_pending=max(0,(self.device_pending or 1)-1)
-            if immediate:
-                self.library.request_device_transcription(selection['identity_hex'])
-                self.wake_event.set()
-            if read_settings(self.root).get('auto_delete', False):
-                await self.delete_saved(session, result)
+            saved = []
+            def notice(text):
+                self.sync_status = text
+                self.message(text)
+            async with DownloadBatch(session, self.root, settings, notice) as batch:
+                for index, chosen in enumerate(pending):
+                    session.check_idle()
+                    self.current_file = chosen.title
+                    self.sync_status = f'{"立即下载" if immediate else "自动下载"} {index+1}/{len(pending)}：{chosen.title}'
+                    def progress(done, total):
+                        self.download_progress = min(99, 100*(index+min(1, done/max(1,total)))/len(pending))
+                    result = await download_one(batch, chosen, download_folder(self.root), False, progress)
+                    await asyncio.to_thread(self.library.register, result)
+                    saved.append(result)
+                    self.device_pending=max(0,(self.device_pending or 1)-1)
+                    if immediate:
+                        self.library.request_device_transcription(selection['identity_hex'])
+                    self.message(f'{"立即下载" if immediate else "自动下载"}完成（{result.get("transport", "ble")}）：{Path(result["path"]).name}')
+                    self.wake_event.set()
+            # Deletes use the restored BLE connection and re-verify every local file.
+            for result in saved:
+                if read_settings(self.root).get('auto_delete', False):
+                    await self.delete_saved(session, result)
             self.download_progress = 100
             self.last_error = ''
             self.sync_status = '下载完成，已加入本地转写队列'
-            self.message(f'{"立即下载" if immediate else "自动下载"}完成：{Path(result["path"]).name}')
-            self.next_sync = 0  # next completed file, yielding to realtime between files
+            self.next_sync = 0  # Refresh inventory and finish an explicit batch next cycle.
             self.wake_event.set()
         except RecordingStarted:
             self.sync_status = '设备开始录音，已让出后台下载'
@@ -479,10 +491,12 @@ class AutoPipeline:
         began=time.monotonic()
         self._start_process()
         checkpoint = cache_folder(self.root)/(hashlib.sha256(key.encode()).hexdigest()+'.json')
+        settings=read_settings(self.root)
         request = {'path':receipt['path'], 'sha256':receipt['sha256'], 'checkpoint':str(checkpoint),
-                   'vocabulary':job['vocabulary'], 'reference':job.get('reference'),
-                   'asr_options':{'chunk_seconds':read_settings(self.root).get('asr_chunk_seconds',60),
-                                  'max_new_tokens':read_settings(self.root).get('asr_max_new_tokens',4096)}}
+                   'vocabulary':job['vocabulary'],
+                   'asr_options':{'chunk_seconds':min(60,settings.get('asr_chunk_seconds',60)),
+                                  'batch_size':settings.get('asr_batch_size',2),
+                                  'max_new_tokens':settings.get('asr_max_new_tokens',4096)}}
         self.process.stdin.write(json.dumps(request, ensure_ascii=False)+'\n')
         self.process.stdin.flush()
         deadline = time.monotonic()+900

@@ -180,6 +180,14 @@ class QueueTests(unittest.TestCase):
 
 
 class SyncTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        # These pre-existing tests exercise BLE/persistence. Wi-Fi integration
+        # and the shared-hotspot path have separate tests in test_transfer_batch.
+        unavailable=SimpleNamespace(__aenter__=AsyncMock(side_effect=RuntimeError('test BLE fallback')))
+        self.wifi_patch=patch('transfer_batch.WifiTransfer',return_value=unavailable)
+        self.wifi_patch.start()
+        self.addCleanup(self.wifi_patch.stop)
+
     async def test_immediate_batch_bypasses_schedule_and_switches_then_returns_to_schedule(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

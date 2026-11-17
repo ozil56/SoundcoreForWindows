@@ -8,6 +8,7 @@ Windows BLE 协议实现参考 [tacshi/Soundcore](https://github.com/tacshi/Soun
 | --- | --- |
 | Python / Tcl / Tk | https://www.python.org/ / https://www.tcl-lang.org/ |
 | Bleak / PyWinRT | https://github.com/hbldh/bleak / https://github.com/pywinrt/pywinrt |
+| websocket-client | https://github.com/websocket-client/websocket-client |
 | cryptography | https://github.com/pyca/cryptography |
 | NumPy | https://numpy.org/ |
 | PyOgg / Xiph 音频库 | https://github.com/Zuzu-Typ/PyOgg / https://xiph.org/ |
